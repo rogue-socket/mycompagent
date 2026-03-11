@@ -62,7 +62,23 @@ def is_risky_action(action: ParsedAction, elements: Iterable[ElementRef]) -> boo
 def detect_repeated_action(history: list[str], current: str, max_repeat: int = 3) -> bool:
     if len(history) < max_repeat:
         return False
-    return all(item == current for item in history[-max_repeat:])
+    if all(item == current for item in history[-max_repeat:]):
+        return True
+    return _detect_cycle(history + [current])
+
+
+def _detect_cycle(actions: list[str], max_cycle_len: int = 4, min_repeats: int = 2) -> bool:
+    """Detect repeating cycles of length 2..max_cycle_len in the action list."""
+    n = len(actions)
+    for cycle_len in range(2, max_cycle_len + 1):
+        needed = cycle_len * (min_repeats + 1)  # at least min_repeats full repetitions
+        if n < needed:
+            continue
+        tail = actions[-needed:]
+        pattern = tail[-cycle_len:]
+        if all(tail[i] == pattern[i % cycle_len] for i in range(len(tail))):
+            return True
+    return False
 
 
 def detect_no_change(last_snapshot_hash: str, current_snapshot_hash: str, repeats: int) -> bool:

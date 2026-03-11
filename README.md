@@ -1,6 +1,15 @@
 # Browser Agent (Playwright CLI)
 
-This repo focuses on a **DOM-driven Playwright CLI browser agent**. It replaces the older vision/cursor approach with **snapshot → LLM reasoning → Playwright CLI command** execution. The system is local-first, observable, and human-in-the-loop safe.
+A **DOM-driven browser agent** powered by Gemini's native function calling. The agent uses a **multi-turn chat** with structured tool calls — no free-text JSON parsing.
+
+Architecture: **Snapshot → Interpreter → Multi-turn Chat (ReAct reasoning + function call) → Playwright CLI execution → Result fed back to chat**
+
+Key design choices:
+- **Native function calling** — the LLM returns typed `FunctionCall` objects, not free-text JSON. Eliminates parsing failures.
+- **Multi-turn conversation** — the chat maintains history across steps. The LLM sees its prior reasoning and tool results.
+- **Chain-of-thought** — the system prompt requires step-by-step reasoning (Observe → Think → Act) before every tool call.
+- **Few-shot examples** — the system instruction includes worked examples of correct reasoning patterns.
+- **Human-in-the-loop** — three approval modes (safe/hybrid/auto) gate risky actions.
 
 ## 1) Setup From Scratch
 
@@ -8,6 +17,7 @@ This repo focuses on a **DOM-driven Playwright CLI browser agent**. It replaces 
 
 - Python 3.11+
 - Playwright CLI installed
+- `google-genai` Python package (v1.66+)
 - A Gemini API key
 
 ### 1.2 Install Python dependencies
@@ -180,9 +190,11 @@ Each run produces:
 runs/<run_id>/
   snapshots/
   screenshots/
-  actions.jsonl
-  llm_responses.jsonl
-  run_meta.json
+  actions.jsonl         # Every action executed + approval status + stdout/stderr
+  llm_responses.jsonl   # Tool calls + reasoning text from the LLM
+  browser_state.jsonl   # URL, title, snapshot paths per step
+  interpreter_state.jsonl  # Parsed page state per step
+  run_meta.json         # Task, stop_reason, step count, runtime
 ```
 
 ## 7) Manual Playwright CLI Commands

@@ -10,7 +10,8 @@ from browser_agent.config_manager import ConfigError, ConfigManager
 from browser_agent.decision_loop import DecisionLoop
 from browser_agent.logger import create_run_paths
 from browser_agent.playwright_executor import PlaywrightExecutor
-from browser_agent.planner import GeminiPlanner
+from browser_agent.planner import ChatPlanner
+from browser_agent.prompt_builder import build_system_instruction
 from browser_agent.skill_checker import SkillCheckError, check_playwright_skill
 from browser_agent.skill_loader import SkillLoadError, load_skill_text
 
@@ -100,7 +101,11 @@ def main() -> int:
         print(f"Skill check failed: {exc}", file=sys.stderr)
         return 2
 
-    planner = GeminiPlanner(api_key=str(config["api_key"]), model_name=str(config["model"]))
+    planner = ChatPlanner(
+        api_key=str(config["api_key"]),
+        model_name=str(config["model"]),
+        system_instruction=build_system_instruction(args.task, skill_text),
+    )
     session = args.session or str(config.get("session") or "") or None
     start_url = args.start_url or str(config.get("start_url") or "") or None
     use_npx = bool(args.use_npx) or bool(config.get("use_npx", False))
@@ -116,7 +121,6 @@ def main() -> int:
         open_url=start_url,
         open_args=_build_open_args(args),
         debug=args.debug,
-        skill_text=skill_text,
     )
 
     loop.run()
