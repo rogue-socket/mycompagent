@@ -6,7 +6,7 @@ setup(
     description="DOM-driven Playwright CLI browser agent",
     packages=find_packages(),
     install_requires=[
-        "google-generativeai>=0.8.0",
+        "google-genai>=1.66.0",
         "PyYAML>=6.0.1",
     ],
     python_requires=">=3.11",

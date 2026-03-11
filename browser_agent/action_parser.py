@@ -7,6 +7,7 @@ and validates element refs.
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass
 
 from browser_agent.tool_definitions import tool_call_to_cli
@@ -44,7 +45,7 @@ def parse_tool_call(tool_name: str, tool_args: dict[str, str]) -> ParsedAction:
         raise ActionParseError(f"Unknown tool: {tool_name}")
 
     # Split into command + args for downstream use.
-    parts = cli_command.split()
+    parts = shlex.split(cli_command)
     # parts[0] = "playwright-cli", parts[1] = command, rest = args
     command = parts[1] if len(parts) > 1 else tool_name
     args = parts[2:] if len(parts) > 2 else []

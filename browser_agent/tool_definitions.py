@@ -6,6 +6,8 @@ returns typed function calls instead of free-form text.
 
 from __future__ import annotations
 
+import shlex
+
 from google.genai import types
 
 # ---------------------------------------------------------------------------
@@ -318,4 +320,4 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
         parts.append(args["path"])
     # snapshot, screenshot, go_back, go_forward, reload, close — no extra args
 
-    return " ".join(parts)
+    return " ".join(shlex.quote(part) for part in parts)
