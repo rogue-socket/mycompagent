@@ -13,6 +13,7 @@ This registers the `browser-agent` command via the console script entry point.
 ```
 browser-agent <task> [flags]
 browser-agent --memory-status
+browser-agent --setup
 ```
 
 ---
@@ -127,6 +128,34 @@ When `--debug` is enabled:
 - Tracing starts at the beginning and stops at the end of the run.
 - Video is recorded and saved to `runs/<run_id>/session.webm`.
 - Trace can be viewed with `npx playwright show-trace runs/<run_id>/trace.zip`.
+
+---
+
+## Setup
+
+| Flag | Description |
+|------|-------------|
+| `--setup` | Re-run interactive configuration setup and exit. Prompts for API key, model, mode, and other defaults. |
+
+```bash
+browser-agent --setup
+```
+
+If a config file already exists at `~/.browser_agent/config.yaml`, you'll be asked to confirm before overwriting:
+
+```
+Existing config found at C:\Users\you\.browser_agent\config.yaml
+Overwrite with new settings? [y/N]: y
+LLM API key (Gemini): ****
+Model [gemini-1.5-flash]: gemini-2.0-flash
+Default mode [safe]: hybrid
+Default Playwright session name (optional):
+Default start URL (optional):
+Use npx playwright-cli by default? [y/N]: n
+Saved config to C:\Users\you\.browser_agent\config.yaml
+```
+
+If no config exists, it runs the first-time setup wizard directly (same as what happens on the very first run).
 
 ---
 

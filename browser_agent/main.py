@@ -21,6 +21,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DOM-driven Playwright browser agent")
     parser.add_argument("task", nargs="?", default=None, help="Natural language task to execute")
     parser.add_argument("--memory-status", action="store_true", help="Print memory status and exit")
+    parser.add_argument("--setup", action="store_true", help="Re-run interactive config setup and exit")
     parser.add_argument("--safe", action="store_true", help="Require approval for every action")
     parser.add_argument("--hybrid", action="store_true", help="Require approval for risky actions")
     parser.add_argument("--auto", action="store_true", help="Fully autonomous mode")
@@ -108,6 +109,19 @@ def _print_memory_status() -> int:
     return 0
 
 
+def _run_setup() -> int:
+    """Re-run interactive configuration setup from scratch."""
+    manager = ConfigManager()
+    if manager.exists():
+        print(f"Existing config found at {manager.config_path}")
+        confirm = input("Overwrite with new settings? [y/N]: ").strip().lower()
+        if confirm not in {"y", "yes"}:
+            print("Setup cancelled.")
+            return 0
+    manager.first_run_setup()
+    return 0
+
+
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
@@ -115,8 +129,11 @@ def main() -> int:
     if args.memory_status:
         return _print_memory_status()
 
+    if args.setup:
+        return _run_setup()
+
     if not args.task:
-        parser.error("task is required (unless using --memory-status)")
+        parser.error("task is required (unless using --memory-status or --setup)")
 
     try:
         mode_override = _resolve_mode(args)
