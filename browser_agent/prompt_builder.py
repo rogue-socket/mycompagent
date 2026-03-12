@@ -5,7 +5,11 @@ from __future__ import annotations
 from browser_agent.interpreter import InterpreterState
 
 
-def build_system_instruction(task: str, skill_text: str | None = None) -> str:
+def build_system_instruction(
+    task: str,
+    skill_text: str | None = None,
+    tier1_lessons: list | None = None,
+) -> str:
     """Build a one-time system instruction for the chat session.
 
     This is set once when the chat starts and never changes.
@@ -31,11 +35,13 @@ def build_system_instruction(task: str, skill_text: str | None = None) -> str:
         "",
         "- Only use element refs (e1, e2, ...) from the most recent page state. Never invent refs.",
         "- Use 'fill' to enter text into a specific input field. Use 'type' only for the focused element.",
+        "- If 'fill' fails, use click(ref) to focus the input first, then type(text) to enter the text.",
         "- Use 'press' for keyboard keys like Enter, Tab, Escape.",
+        "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
+        "  autocomplete dropdowns often cover it and cause timeout errors.",
         "- Call 'finish' when the task is complete.",
         "- If you are stuck, try 'snapshot' to see the current page state.",
         "- If your previous action failed, try a different approach instead of repeating it.",
-        "- After typing in a search box, press Enter or click the search button to submit.",
         "",
         "## Examples of good reasoning",
         "",
@@ -43,6 +49,16 @@ def build_system_instruction(task: str, skill_text: str | None = None) -> str:
         "",
         f"## Goal\n\n{task}",
     ]
+
+    if tier1_lessons:
+        lesson_lines = [f"- {ls.lesson}" for ls in tier1_lessons]
+        parts.extend([
+            "",
+            "## Lessons from experience",
+            "",
+            "These are lessons learned from previous runs. Follow them.",
+            *lesson_lines,
+        ])
 
     if skill_text:
         parts.extend(["", "## Reference documentation", "", skill_text.strip()])
@@ -65,7 +81,7 @@ I need to search for 'weather in London'. I'll fill the search box first."
 
 Next step reasoning:
 "I filled the search box with 'weather in London'. Now I need to submit the search.
-I can either click the search button e60 or press Enter. I'll press Enter."
+I should press Enter rather than clicking the search button, because autocomplete dropdowns often cover it."
 → Tool call: press(key="Enter")
 
 ### Example 2 — Navigating to a link
@@ -94,8 +110,20 @@ Good reasoning:
 The page may have changed. Let me take a snapshot to see the current state."
 → Tool call: snapshot()
 
+### Example 5 — Recovery from fill failure
+Previous action failed: fill(ref="e37", value="padel rackets") → "too many arguments"
+
+Good reasoning:
+"My fill action failed. I'll try an alternative approach: click the input field first to focus it,
+then use type to enter the text."
+→ Tool call: click(ref="e37")
+
+Next step:
+"I clicked e37 to focus it. Now I'll type my search text."
+→ Tool call: type(text="padel rackets")
+
 ### Common mistakes to avoid
-- Do NOT call click immediately after fill — press Enter or click the search/submit button instead.
+- Do NOT click search/submit buttons after entering text — autocomplete dropdowns often cover them. Use press(key="Enter") instead.
 - Do NOT repeat the same failing action. If it failed once, try something different.
 - Do NOT invent element refs. Only use refs from the most recent page state.
 - Do NOT call fill on a non-input element. Check the element type first.
@@ -107,6 +135,7 @@ def build_page_message(
     action_history: list[str],
     max_elements: int = 60,
     last_error: str | None = None,
+    domain_context: str | None = None,
 ) -> str:
     """Build a per-step user message with current page state."""
     element_lines = [
@@ -125,6 +154,9 @@ def build_page_message(
 
     if last_error:
         sections.append(f"IMPORTANT - Last action failed:\n{last_error}\nTry a different approach.")
+
+    if domain_context:
+        sections.append(f"Tips for this site:\n{domain_context}")
 
     sections.append("Call the appropriate tool for the next action.")
 

@@ -13,6 +13,7 @@ from browser_agent.guardrails import detect_no_change, detect_repeated_action
 from browser_agent.interpreter import interpret_page
 from browser_agent.interpreter_state import to_dict as interpreter_to_dict
 from browser_agent.logger import append_jsonl, write_run_meta, write_snapshot
+from browser_agent.memory import MemoryStore, _domain_from_url, extract_lessons_from_run
 from browser_agent.playwright_executor import PlaywrightExecutionError, PlaywrightExecutor
 from browser_agent.planner import ChatPlanner, PlannerError
 from browser_agent.prompt_builder import build_page_message
@@ -34,6 +35,7 @@ class DecisionLoop:
         open_url: str | None,
         open_args: list[str],
         debug: bool,
+        memory: MemoryStore | None = None,
     ) -> None:
         self.task = task
         self.mode = mode
@@ -44,6 +46,7 @@ class DecisionLoop:
         self.open_url = open_url
         self.open_args = open_args
         self.debug = debug
+        self.memory = memory
         self.step = 0
         self.errors = 0
         self.stop_reason = "unknown"
@@ -54,6 +57,8 @@ class DecisionLoop:
         self.last_action_ok = False
         self.short_text_retries = 0
         self.last_step_error: str | None = None
+        self.last_domain: str | None = None
+        self._domain_context: str | None = None
 
     def run(self) -> str:
         start = time.monotonic()
@@ -109,6 +114,20 @@ class DecisionLoop:
                 )
                 interpreter_dict = interpreter_to_dict(interpreter_state)
 
+                # ---- Memory: domain recall (Trigger B) ----
+                if self.memory:
+                    current_domain = _domain_from_url(interpreter_state.url or "")
+                    if current_domain and current_domain != self.last_domain:
+                        site_lessons = self.memory.recall_on_domain(current_domain)
+                        if site_lessons:
+                            tips = "\n".join(f"- {ls.lesson}" for ls in site_lessons)
+                            self._domain_context = tips
+                            for ls in site_lessons:
+                                self.memory.increment_use(ls, current_domain)
+                        else:
+                            self._domain_context = None
+                        self.last_domain = current_domain
+
                 append_jsonl(
                     self.paths.browser_state_log,
                     {
@@ -149,6 +168,7 @@ class DecisionLoop:
                     self.action_history,
                     max_elements=int(self.config.get("max_elements", 60)),
                     last_error=self.last_step_error,
+                    domain_context=self._domain_context,
                 )
                 self.last_step_error = None
                 self._log(f"Step {self.step}: message length={len(message)} chars")
@@ -327,6 +347,22 @@ class DecisionLoop:
                     if "install-browser" in exec_result.stderr.lower():
                         self.stop_reason = "browser_not_installed"
                         break
+                    # ---- Memory: error recall (Trigger A) ----
+                    if self.memory and self.last_step_error:
+                        cmd_name = parsed_action.command or ""
+                        tips = self.memory.recall_on_error(
+                            cmd_name, self.last_step_error
+                        )
+                        if tips:
+                            hint = "\n".join(f"- {t.lesson}" for t in tips)
+                            self.last_step_error += (
+                                f"\n\nTips from previous experience:\n{hint}"
+                            )
+                            domain = _domain_from_url(
+                                interpreter_state.url or ""
+                            )
+                            for t in tips:
+                                self.memory.increment_use(t, domain)
                     if self.errors >= int(self.config.get("max_errors", 5)):
                         self.stop_reason = "max_errors"
                         break
@@ -334,6 +370,13 @@ class DecisionLoop:
             if self.stop_reason == "unknown":
                 self.stop_reason = "max_steps"
         finally:
+            # ---- Post-run learning ----
+            if self.memory:
+                try:
+                    extract_lessons_from_run(self.paths.actions_log, self.memory)
+                except Exception:  # noqa: BLE001
+                    pass  # Non-critical; don't crash the agent.
+
             if self.debug:
                 self.executor.run("playwright-cli tracing-stop")
                 self.executor.run(

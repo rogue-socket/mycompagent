@@ -9,6 +9,7 @@ from pathlib import Path
 from browser_agent.config_manager import ConfigError, ConfigManager
 from browser_agent.decision_loop import DecisionLoop
 from browser_agent.logger import create_run_paths
+from browser_agent.memory import MemoryStore
 from browser_agent.playwright_executor import PlaywrightExecutor
 from browser_agent.planner import ChatPlanner
 from browser_agent.prompt_builder import build_system_instruction
@@ -101,10 +102,15 @@ def main() -> int:
         print(f"Skill check failed: {exc}", file=sys.stderr)
         return 2
 
+    memory = MemoryStore()
+    memory.load()
+
     planner = ChatPlanner(
         api_key=str(config["api_key"]),
         model_name=str(config["model"]),
-        system_instruction=build_system_instruction(args.task, skill_text),
+        system_instruction=build_system_instruction(
+            args.task, skill_text, tier1_lessons=memory.get_tier1()
+        ),
     )
     session = args.session or str(config.get("session") or "") or None
     start_url = args.start_url or str(config.get("start_url") or "") or None
@@ -121,6 +127,7 @@ def main() -> int:
         open_url=start_url,
         open_args=_build_open_args(args),
         debug=args.debug,
+        memory=memory,
     )
 
     loop.run()
