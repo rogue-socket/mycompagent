@@ -337,6 +337,133 @@ class TestPostRunLearning:
 
 
 # ---------------------------------------------------------------------------
+# Memory event logging
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryEvents:
+    """Verify the on_event callback fires for key memory operations."""
+
+    @pytest.fixture()
+    def events(self) -> list[dict]:
+        return []
+
+    @pytest.fixture()
+    def estore(self, tmp_memory_path: Path, events: list[dict]) -> MemoryStore:
+        ms = MemoryStore(path=tmp_memory_path, on_event=events.append)
+        ms.load()
+        return ms
+
+    def test_tier1_loaded_event(self, estore: MemoryStore, events: list[dict]) -> None:
+        estore.get_tier1()
+        tier1_events = [e for e in events if e["event"] == "tier1_loaded"]
+        assert len(tier1_events) == 1
+        assert tier1_events[0]["count"] >= 1
+
+    def test_error_recall_event(self, estore: MemoryStore, events: list[dict]) -> None:
+        estore.recall_on_error("fill", "too many arguments: expected 2")
+        recall_events = [e for e in events if e["event"] == "error_recall"]
+        assert len(recall_events) == 1
+        assert recall_events[0]["command"] == "fill"
+
+    def test_error_recall_no_match_still_emits(
+        self, estore: MemoryStore, events: list[dict]
+    ) -> None:
+        estore.recall_on_error("goto", "something unrelated")
+        recall_events = [e for e in events if e["event"] == "error_recall"]
+        assert len(recall_events) == 1
+        assert recall_events[0]["matched"] == 0
+
+    def test_domain_recall_event(self, estore: MemoryStore, events: list[dict]) -> None:
+        estore.record_lesson(
+            Lesson(lesson="tip", category="site_specific", domain="example.com")
+        )
+        estore.recall_on_domain("www.example.com")
+        domain_events = [e for e in events if e["event"] == "domain_recall"]
+        assert len(domain_events) == 1
+        assert domain_events[0]["domain"] == "www.example.com"
+        assert domain_events[0]["matched"] == 1
+
+    def test_lesson_recorded_event(
+        self, estore: MemoryStore, events: list[dict]
+    ) -> None:
+        estore.record_lesson(
+            Lesson(
+                lesson="new tip",
+                category="error_recovery",
+                failed_command="hover",
+                error_pattern="not hoverable",
+            )
+        )
+        recorded = [e for e in events if e["event"] == "lesson_recorded"]
+        assert len(recorded) == 1
+        assert recorded[0]["lesson"] == "new tip"
+
+    def test_lesson_deduplicated_event(
+        self, estore: MemoryStore, events: list[dict]
+    ) -> None:
+        estore.record_lesson(
+            Lesson(
+                lesson="a",
+                category="error_recovery",
+                failed_command="x",
+                error_pattern="y",
+            )
+        )
+        estore.record_lesson(
+            Lesson(
+                lesson="b",
+                category="error_recovery",
+                failed_command="x",
+                error_pattern="y",
+            )
+        )
+        dedup = [e for e in events if e["event"] == "lesson_deduplicated"]
+        assert len(dedup) == 1
+
+    def test_lesson_promoted_event(
+        self, estore: MemoryStore, events: list[dict]
+    ) -> None:
+        lesson = Lesson(
+            lesson="universal tip",
+            category="error_recovery",
+            failed_command="fill",
+            error_pattern="err",
+            use_count=4,
+            triggered_domains=["a.com", "b.com"],
+        )
+        estore.record_lesson(lesson)
+        estore.increment_use(lesson, "c.com")  # triggers promotion
+        promoted = [e for e in events if e["event"] == "lesson_promoted"]
+        assert len(promoted) == 1
+        assert promoted[0]["lesson"] == "universal tip"
+
+    def test_lessons_pruned_event(
+        self, estore: MemoryStore, events: list[dict]
+    ) -> None:
+        estore.record_lesson(
+            Lesson(
+                lesson="stale",
+                category="error_recovery",
+                use_count=1,
+                last_used="2020-01-01",
+            )
+        )
+        estore.prune_stale(max_age_days=1)
+        pruned = [e for e in events if e["event"] == "lessons_pruned"]
+        assert len(pruned) == 1
+        assert pruned[0]["pruned_count"] >= 1
+
+    def test_no_events_without_callback(self, tmp_memory_path: Path) -> None:
+        ms = MemoryStore(path=tmp_memory_path)
+        ms.load()
+        # Should not raise even though no callback is set.
+        ms.get_tier1()
+        ms.recall_on_error("fill", "err")
+        ms.recall_on_domain("example.com")
+
+
+# ---------------------------------------------------------------------------
 # Utilities
 # ---------------------------------------------------------------------------
 

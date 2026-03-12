@@ -19,7 +19,10 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+# Type for the optional event callback.
+MemoryEventCallback = Callable[[dict[str, Any]], None]
 
 # Categories that qualify for Tier 1 (always in system prompt).
 _TIER1_CATEGORIES = {"tool_fallback", "best_practice"}
@@ -75,9 +78,19 @@ class Lesson:
 class MemoryStore:
     """Persistent lesson storage with tiered retrieval."""
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        on_event: MemoryEventCallback | None = None,
+    ) -> None:
         self.path = Path(path or DEFAULT_MEMORY_PATH).expanduser()
         self.lessons: list[Lesson] = []
+        self._on_event = on_event
+
+    def _emit(self, event: dict[str, Any]) -> None:
+        """Send an event to the registered callback, if any."""
+        if self._on_event is not None:
+            self._on_event(event)
 
     # -- persistence --
 
@@ -114,7 +127,13 @@ class MemoryStore:
         """Return universal lessons eligible for the system prompt."""
         candidates = [ls for ls in self.lessons if ls.category in _TIER1_CATEGORIES]
         candidates.sort(key=lambda ls: (-ls.use_count, ls.source != "seed"))
-        return candidates[:max_items]
+        result = candidates[:max_items]
+        self._emit({
+            "event": "tier1_loaded",
+            "count": len(result),
+            "lessons": [ls.lesson for ls in result],
+        })
+        return result
 
     # -- Tier 2: searched on demand --
 
@@ -130,16 +149,31 @@ class MemoryStore:
             if score > 0:
                 matches.append((score, lesson))
         matches.sort(key=lambda x: -x[0])
-        return [item for _, item in matches[:3]]
+        result = [item for _, item in matches[:3]]
+        self._emit({
+            "event": "error_recall",
+            "command": command,
+            "error_snippet": error[:120],
+            "matched": len(result),
+            "lessons": [ls.lesson for ls in result],
+        })
+        return result
 
     def recall_on_domain(self, domain: str) -> list[Lesson]:
         """Find site-specific lessons for a domain."""
-        return [
+        result = [
             ls
             for ls in self.lessons
             if ls.domain
             and (ls.domain == domain or domain.endswith("." + ls.domain))
         ][:3]
+        self._emit({
+            "event": "domain_recall",
+            "domain": domain,
+            "matched": len(result),
+            "lessons": [ls.lesson for ls in result],
+        })
+        return result
 
     # -- Recording and updating --
 
@@ -158,9 +192,21 @@ class MemoryStore:
                 existing.failed_command == lesson.failed_command
                 and existing.error_pattern == lesson.error_pattern
             ):
+                self._emit({
+                    "event": "lesson_deduplicated",
+                    "lesson": existing.lesson,
+                    "new_use_count": existing.use_count + 1,
+                })
                 self.increment_use(existing)
                 return
         self.lessons.append(lesson)
+        self._emit({
+            "event": "lesson_recorded",
+            "lesson": lesson.lesson,
+            "category": lesson.category,
+            "failed_command": lesson.failed_command,
+            "error_pattern": lesson.error_pattern,
+        })
 
     # -- Promotion --
 
@@ -175,12 +221,19 @@ class MemoryStore:
             and len(lesson.triggered_domains) >= _PROMOTE_DOMAIN_COUNT
         ):
             lesson.category = "best_practice"
+            self._emit({
+                "event": "lesson_promoted",
+                "lesson": lesson.lesson,
+                "use_count": lesson.use_count,
+                "triggered_domains": list(lesson.triggered_domains),
+            })
 
     # -- Pruning --
 
     def prune_stale(self, max_age_days: int = _PRUNE_MAX_AGE_DAYS) -> None:
         """Remove learned lessons that are old and rarely used."""
         cutoff = (datetime.now() - timedelta(days=max_age_days)).strftime("%Y-%m-%d")
+        before = len(self.lessons)
         self.lessons = [
             ls
             for ls in self.lessons
@@ -188,6 +241,13 @@ class MemoryStore:
             or ls.last_used >= cutoff
             or ls.use_count >= _PRUNE_MIN_USES
         ]
+        pruned = before - len(self.lessons)
+        if pruned:
+            self._emit({
+                "event": "lessons_pruned",
+                "pruned_count": pruned,
+                "remaining_count": len(self.lessons),
+            })
 
     # -- Seeding --
 

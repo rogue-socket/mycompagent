@@ -20,6 +20,7 @@ class RunPaths:
         self.browser_state_log = root / "browser_state.jsonl"
         self.interpreter_state_log = root / "interpreter_state.jsonl"
         self.reasoning_log = root / "agent_reasoning.jsonl"
+        self.memory_events_log = root / "memory_events.jsonl"
         self.run_meta = root / "run_meta.json"
 
 

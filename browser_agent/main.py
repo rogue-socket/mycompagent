@@ -8,7 +8,7 @@ from pathlib import Path
 
 from browser_agent.config_manager import ConfigError, ConfigManager
 from browser_agent.decision_loop import DecisionLoop
-from browser_agent.logger import create_run_paths
+from browser_agent.logger import append_jsonl, create_run_paths
 from browser_agent.memory import MemoryStore
 from browser_agent.playwright_executor import PlaywrightExecutor
 from browser_agent.planner import ChatPlanner
@@ -102,7 +102,9 @@ def main() -> int:
         print(f"Skill check failed: {exc}", file=sys.stderr)
         return 2
 
-    memory = MemoryStore()
+    memory = MemoryStore(
+        on_event=lambda evt: append_jsonl(paths.memory_events_log, evt),
+    )
     memory.load()
 
     planner = ChatPlanner(

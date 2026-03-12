@@ -406,3 +406,61 @@ Memory is stored at `~/.browser_agent/memory.json` (same directory as `config.ya
   ]
 }
 ```
+
+## Observability — Memory Events Log
+
+Each run produces a `memory_events.jsonl` file alongside the other run logs. It records every interaction the memory system has during a run, making it easy to verify what was accessed, what matched, and what changed.
+
+### Event Types
+
+| Event | When | Key Fields |
+|-------|------|------------|
+| `tier1_loaded` | Run startup (`get_tier1()`) | `count`, `lessons` (list of lesson texts) |
+| `error_recall` | Trigger A — command fails | `command`, `error_snippet`, `matched` (count), `lessons` |
+| `domain_recall` | Trigger B — domain changes | `domain`, `matched` (count), `lessons` |
+| `lesson_recorded` | Post-run learning finds a new pattern | `lesson`, `category`, `failed_command`, `error_pattern` |
+| `lesson_deduplicated` | Post-run learning matches an existing lesson | `lesson`, `new_use_count` |
+| `lesson_promoted` | `error_recovery` → `best_practice` | `lesson`, `use_count`, `triggered_domains` |
+| `lessons_pruned` | On `load()`, stale lessons removed | `pruned_count`, `remaining_count` |
+
+### How It Works
+
+`MemoryStore` accepts an optional `on_event` callback (`Callable[[dict], None]`). When provided, every retrieval, recording, promotion, and pruning operation emits a structured dict to the callback. In production, `main.py` wires this to `append_jsonl(paths.memory_events_log, evt)`.
+
+The memory module has no dependency on the logger — the callback is injected from the outside.
+
+### Example Output
+
+After a run, `runs/run_20260312T143000Z/memory_events.jsonl` might contain:
+
+```json
+{"event": "tier1_loaded", "count": 3, "lessons": ["If fill fails, click(ref) to focus the input, then type(text) to enter text.", "After entering text in a search box, press Enter to submit...", "If an overlay or popup is blocking an element, press Escape..."]}
+{"event": "domain_recall", "domain": "www.google.com", "matched": 0, "lessons": []}
+{"event": "error_recall", "command": "fill", "error_snippet": "too many arguments: expected 2, received 3", "matched": 1, "lessons": ["If fill fails, click(ref) to focus the input, then type(text) to enter text."]}
+{"event": "lesson_deduplicated", "lesson": "If fill fails, click(ref) to focus the input, then type(text) to enter text.", "new_use_count": 4}
+```
+
+### Querying Events
+
+```bash
+# All memory activity for the latest run
+cat runs/run_*/memory_events.jsonl | python -m json.tool
+
+# Only error recalls (did Trigger A fire? what matched?)
+grep "error_recall" runs/run_*/memory_events.jsonl
+
+# Only domain recalls (did Trigger B fire? what matched?)
+grep "domain_recall" runs/run_*/memory_events.jsonl
+
+# Check for promotions across all runs
+grep "lesson_promoted" runs/run_*/memory_events.jsonl
+
+# Count how often each event type fires
+cat runs/run_*/memory_events.jsonl | python -c "
+import sys, json, collections
+c = collections.Counter()
+for line in sys.stdin:
+    c[json.loads(line)['event']] += 1
+for k, v in c.most_common(): print(f'{k}: {v}')
+"
+```
