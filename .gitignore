@@ -22,3 +22,10 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Browser agent runs
+/runs/
+!/runs/.gitkeep
+
+# Playwright CLI artifacts
+/.playwright-cli/
