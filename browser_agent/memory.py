@@ -88,6 +88,8 @@ class MemoryStore:
             return
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                raise TypeError("expected a dict")
             self.lessons = [Lesson(**item) for item in raw.get("lessons", [])]
         except (json.JSONDecodeError, TypeError):
             self.lessons = []
@@ -313,7 +315,7 @@ def _extract_key_phrase(error_text: str) -> str | None:
     for phrase in _KNOWN_ERROR_PHRASES:
         if phrase in error_lower:
             return phrase
-    first_line = error_text.strip().split("\n")[0][:80]
+    first_line = error_lower.strip().split("\n")[0][:80]
     return first_line if first_line else None
 
 

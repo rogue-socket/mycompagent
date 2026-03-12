@@ -58,6 +58,12 @@ class TestPersistence:
         ms.load()
         assert len(ms.lessons) >= 3  # reseeded
 
+    def test_list_root_reseeds(self, tmp_memory_path: Path) -> None:
+        tmp_memory_path.write_text('[{"lesson": "stray"}]', encoding="utf-8")
+        ms = MemoryStore(path=tmp_memory_path)
+        ms.load()
+        assert len(ms.lessons) >= 3  # reseeded, not crashed
+
 
 # ---------------------------------------------------------------------------
 # Tier 1 — proactive retrieval
@@ -122,6 +128,20 @@ class TestTier2:
 
     def test_recall_on_domain_no_match(self, store: MemoryStore) -> None:
         assert store.recall_on_domain("unknown-site.example") == []
+
+    def test_recall_on_error_case_insensitive(self, store: MemoryStore) -> None:
+        store.record_lesson(
+            Lesson(
+                lesson="wait and retry",
+                category="error_recovery",
+                failed_command="click",
+                error_pattern="timeout 30000ms exceeded",
+            )
+        )
+        results = store.recall_on_error(
+            "click", "Timeout 30000ms exceeded waiting for selector"
+        )
+        assert any("wait and retry" in r.lesson for r in results)
 
 
 # ---------------------------------------------------------------------------
