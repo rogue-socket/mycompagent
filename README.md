@@ -1,8 +1,8 @@
-# Browser Agent (Playwright CLI)
+# Browser Agent
 
 A **DOM-driven browser agent** powered by Gemini's native function calling. The agent uses a **multi-turn chat** with structured tool calls — no free-text JSON parsing.
 
-Architecture: **Snapshot → Interpreter → Multi-turn Chat (ReAct reasoning + function call) → Playwright CLI execution → Result fed back to chat**
+Architecture: **Snapshot → Interpreter → Multi-turn Chat (ReAct reasoning + function call) → Execution → Result fed back to chat**
 
 Key design choices:
 - **Native function calling** — the LLM returns typed `FunctionCall` objects, not free-text JSON. Eliminates parsing failures.
@@ -10,6 +10,7 @@ Key design choices:
 - **Chain-of-thought** — the system prompt requires step-by-step reasoning (Observe → Think → Act) before every tool call.
 - **Few-shot examples** — the system instruction includes worked examples of correct reasoning patterns.
 - **Human-in-the-loop** — three approval modes (safe/hybrid/auto) gate risky actions.
+- **Two-tiered memory** — the agent learns from mistakes across runs and self-optimizes over time.
 
 ## 1) Setup From Scratch
 
@@ -190,12 +191,45 @@ Each run produces:
 runs/<run_id>/
   snapshots/
   screenshots/
-  actions.jsonl         # Every action executed + approval status + stdout/stderr
-  llm_responses.jsonl   # Tool calls + reasoning text from the LLM
-  browser_state.jsonl   # URL, title, snapshot paths per step
+  actions.jsonl            # Every action executed + approval status + stdout/stderr
+  llm_responses.jsonl      # Tool calls + reasoning text from the LLM
+  browser_state.jsonl      # URL, title, snapshot paths per step
   interpreter_state.jsonl  # Parsed page state per step
-  run_meta.json         # Task, stop_reason, step count, runtime
+  memory_events.jsonl      # Memory access, recalls, learning, promotions
+  run_meta.json            # Task, stop_reason, step count, runtime
 ```
+
+### 6.4 Memory observability
+
+The agent has a two-tiered memory system that learns from failure→recovery patterns across runs. Every memory interaction is logged to `memory_events.jsonl`:
+
+| Event | What it tells you |
+|-------|-------------------|
+| `tier1_loaded` | Which universal lessons were injected into the system prompt |
+| `error_recall` | A command failed — did memory find relevant tips? |
+| `domain_recall` | Navigated to a new domain — any site-specific advice? |
+| `lesson_recorded` | Post-run learning found a new failure→recovery pattern |
+| `lesson_deduplicated` | An existing lesson was reinforced (use count bumped) |
+| `lesson_promoted` | A lesson graduated from reactive (Tier 2) to always-on (Tier 1) |
+| `lessons_pruned` | Stale lessons were cleaned up on startup |
+
+Query examples:
+
+```bash
+# All memory activity for a run
+cat runs/run_*/memory_events.jsonl | python -m json.tool
+
+# Did Trigger A (error recall) fire? What matched?
+grep "error_recall" runs/run_*/memory_events.jsonl
+
+# Did Trigger B (domain recall) fire?
+grep "domain_recall" runs/run_*/memory_events.jsonl
+
+# Any promotions across all runs?
+grep "lesson_promoted" runs/run_*/memory_events.jsonl
+```
+
+The memory store itself is persisted at `~/.browser_agent/memory.json`. See [docs/memory-system.md](docs/memory-system.md) for the full architecture.
 
 ## 7) Manual Playwright CLI Commands
 
