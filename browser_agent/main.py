@@ -9,7 +9,7 @@ from pathlib import Path
 from browser_agent.config_manager import ConfigError, ConfigManager
 from browser_agent.decision_loop import DecisionLoop
 from browser_agent.logger import append_jsonl, create_run_paths
-from browser_agent.memory import MemoryStore
+from browser_agent.memory import MAX_TIER1, MemoryStore, _TIER1_CATEGORIES
 from browser_agent.playwright_executor import PlaywrightExecutor
 from browser_agent.planner import ChatPlanner
 from browser_agent.prompt_builder import build_system_instruction
@@ -19,7 +19,8 @@ from browser_agent.skill_loader import SkillLoadError, load_skill_text
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DOM-driven Playwright browser agent")
-    parser.add_argument("task", help="Natural language task to execute")
+    parser.add_argument("task", nargs="?", default=None, help="Natural language task to execute")
+    parser.add_argument("--memory-status", action="store_true", help="Print memory status and exit")
     parser.add_argument("--safe", action="store_true", help="Require approval for every action")
     parser.add_argument("--hybrid", action="store_true", help="Require approval for risky actions")
     parser.add_argument("--auto", action="store_true", help="Fully autonomous mode")
@@ -67,9 +68,55 @@ def _build_open_args(args: argparse.Namespace) -> list[str]:
     return open_args
 
 
+def _print_memory_status() -> int:
+    """Print a human-readable summary of the memory store and exit."""
+    memory = MemoryStore()
+    memory.load()
+
+    print(f"Memory file: {memory.path}")
+    print(f"Total lessons: {len(memory.lessons)}")
+
+    tier1 = [ls for ls in memory.lessons if ls.category in _TIER1_CATEGORIES]
+    tier1.sort(key=lambda ls: (-ls.use_count, ls.source != "seed"))
+    tier2 = [ls for ls in memory.lessons if ls.category not in _TIER1_CATEGORIES]
+
+    if tier1:
+        print(f"\nTIER 1 — in system prompt (top {MAX_TIER1}):")
+        for ls in tier1:
+            tag = f"[{ls.source}]"
+            print(f"  {tag:<10} {ls.category:<16} | uses={ls.use_count:<3} | \"{ls.lesson}\"")
+    else:
+        print("\nNo Tier 1 lessons.")
+
+    if tier2:
+        print("\nTIER 2 — recalled on demand:")
+        for ls in tier2:
+            tag = f"[{ls.source}]"
+            domains = ", ".join(ls.triggered_domains) if ls.triggered_domains else "none"
+            domain_info = f" | domain={ls.domain}" if ls.domain else ""
+            print(
+                f"  {tag:<10} {ls.category:<16} | uses={ls.use_count:<3} "
+                f"| triggered_on=[{domains}]{domain_info} | \"{ls.lesson}\""
+            )
+    else:
+        print("\nNo Tier 2 lessons.")
+
+    if memory.lessons:
+        newest = max(ls.last_used for ls in memory.lessons)
+        print(f"\nLast updated: {newest}")
+
+    return 0
+
+
 def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.memory_status:
+        return _print_memory_status()
+
+    if not args.task:
+        parser.error("task is required (unless using --memory-status)")
 
     try:
         mode_override = _resolve_mode(args)
@@ -106,12 +153,17 @@ def main() -> int:
         on_event=lambda evt: append_jsonl(paths.memory_events_log, evt),
     )
     memory.load()
+    tier1 = memory.get_tier1()
+    print(
+        f"Memory loaded from {memory.path} "
+        f"({len(memory.lessons)} lessons, {len(tier1)} tier-1)"
+    )
 
     planner = ChatPlanner(
         api_key=str(config["api_key"]),
         model_name=str(config["model"]),
         system_instruction=build_system_instruction(
-            args.task, skill_text, tier1_lessons=memory.get_tier1()
+            args.task, skill_text, tier1_lessons=tier1
         ),
     )
     session = args.session or str(config.get("session") or "") or None

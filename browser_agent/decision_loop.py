@@ -124,6 +124,10 @@ class DecisionLoop:
                             self._domain_context = tips
                             for ls in site_lessons:
                                 self.memory.increment_use(ls, current_domain)
+                            self._log(
+                                f"Step {self.step}: Memory: domain recall for "
+                                f"{current_domain} -> {len(site_lessons)} tips injected"
+                            )
                         else:
                             self._domain_context = None
                         self.last_domain = current_domain
@@ -363,6 +367,10 @@ class DecisionLoop:
                             )
                             for t in tips:
                                 self.memory.increment_use(t, domain)
+                            self._log(
+                                f"Step {self.step}: Memory: error recall for "
+                                f"'{cmd_name}' -> {len(tips)} tips found"
+                            )
                     if self.errors >= int(self.config.get("max_errors", 5)):
                         self.stop_reason = "max_errors"
                         break
@@ -372,10 +380,21 @@ class DecisionLoop:
         finally:
             # ---- Post-run learning ----
             if self.memory:
+                lesson_count_before = len(self.memory.lessons)
                 try:
                     extract_lessons_from_run(self.paths.actions_log, self.memory)
-                except Exception:  # noqa: BLE001
-                    pass  # Non-critical; don't crash the agent.
+                    new_lessons = len(self.memory.lessons) - lesson_count_before
+                    if new_lessons:
+                        self._log(f"Memory: post-run learning -> {new_lessons} new lesson(s)")
+                except Exception as exc:  # noqa: BLE001
+                    self._log(f"Memory: post-run learning failed: {exc}")
+                try:
+                    self.memory.save()
+                    self._log(
+                        f"Memory: saved {len(self.memory.lessons)} lessons to {self.memory.path}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    self._log(f"Memory: save failed: {exc}")
 
             if self.debug:
                 self.executor.run("playwright-cli tracing-stop")
