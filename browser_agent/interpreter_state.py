@@ -13,7 +13,13 @@ def to_dict(state: InterpreterState) -> dict[str, Any]:
         "title": state.title,
         "page_type": state.page_type,
         "clickable_elements": [
-            {"id": e.element_id, "type": e.element_type, "text": e.text}
+            {
+                "id": e.element_id,
+                "type": e.element_type,
+                "text": e.text,
+                "href": e.href,
+                "area": e.area,
+            }
             for e in state.clickable_elements
         ],
         "visible_text": state.visible_text,
