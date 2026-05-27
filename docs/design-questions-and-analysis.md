@@ -9,6 +9,26 @@ remain.
 > with multi-turn chat. Several issues below are now **resolved** or **superseded**.
 > Each section is annotated with its current status.
 
+> **Review note (2026-05-27):** The active planning path still uses native function
+> calling. Sections about free-text JSON repair and `type` -> `fill` text
+> normalization are historical unless that older planner path is restored. The
+> effective action surface is `browser_agent/tool_definitions.py`;
+> `constants.ALLOWED_COMMANDS` is now legacy and is not used to authorize LLM tool
+> calls. A fresh `mycompagent` Conda env should install `requirements-dev.txt`
+> for test dependencies.
+> The current full suite reports 109 passed after updating memory tests to match
+> intended seed deduplication, classifying non-retryable planner auth/config
+> failures as configuration errors, grouping article-page links by area, and
+> adding task-focused evidence snippets, planner metrics, same-page anchor guards,
+> Wikipedia redirect/canonical prompt notes, taxonomy route-quality warnings, and
+> lightweight Wikipedia route-helper hints, grounded route logging, Manga
+> bridge-link route optimization coverage, compact Codex planner history,
+> explicit legacy-command registry documentation, structured run results, and
+> reasoning artifact persistence, and memory dedupe regression coverage.
+> Real memory-flow evaluation on 2026-05-27 verified persistence/recall across
+> real Codex-backed browser runs and exposed a planner grounding gap after
+> recalled recovery tips; see `docs/memory-real-flow-evaluation-2026-05-27.md`.
+
 ---
 
 ## 1. Race Condition in Snapshot Staleness Detection
@@ -195,6 +215,11 @@ than arbitrary JS.
 ---
 
 ## 4. Visible Text Extraction Uses `eval` with Triple-Backtick Parsing
+
+> **Status note (2026-05-27): FIXED AFTER SMOKE RUN.** `playwright-cli eval
+> "document.body.innerText"` emits `### Result` plus a fenced `### Ran Playwright
+> code` block. `_extract_eval_output()` now reads the `### Result` section, so
+> `interpreter_state.visible_text` contains page text instead of generated JS.
 
 **Question:** In `interpreter.py` line 107, `_get_visible_text` runs
 `playwright-cli eval "document.body.innerText"`. The eval output is parsed by

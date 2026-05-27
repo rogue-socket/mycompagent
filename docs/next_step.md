@@ -24,6 +24,10 @@ An **orchestrator** layer sits above the existing browser agent. It decomposes c
 
 The browser agent remains unchanged except for one addition: the `finish` tool gains an `output` field so the agent can return extracted data, not just a completion reason.
 
+## Current Status
+
+Reviewed on 2026-05-27: this orchestrator is still a plan, not an implemented module. There is no `browser_agent/orchestrator.py`. The base browser loop now returns a structured `RunResult`, the `finish` tool accepts optional `output`, and the memory tests are green, so result collection is no longer blocked on base-loop work.
+
 ## Architecture Overview
 
 ### Orchestrator Main Loop
@@ -430,18 +434,15 @@ After:  finish(reason="Found padel rackets on Amazon",
 
 #### 2. `browser_agent/decision_loop.py` — Return structured result from `run()`
 
-**What it does today**: `DecisionLoop.run()` returns a single string — the stop reason (e.g., `"completed"`, `"max_errors"`, `"repeated_action"`). When the agent calls `finish`, the output is logged to `actions.jsonl` but then thrown away. The caller (main.py) currently ignores the return value entirely.
-
-**What needs to change**: `run()` should return a structured result — not just a string. Create a small dataclass (call it `RunResult`) with:
-- `stop_reason: str` — same as today
+**Current behavior**: `DecisionLoop.run()` returns a structured `RunResult` dataclass with:
+- `stop_reason: str`
 - `finish_output: str | None` — the `output` value from the `finish` call, if the agent completed successfully
 - `steps_used: int` — how many steps the agent took
-
-Also add an instance variable (like `self.finish_output`) that captures the `output` argument when the agent calls the `finish` tool. Right now the code logs `reason` from the finish args but doesn't store it anywhere accessible.
+- `grounded_route: list[dict[str, str]]` — actual successful click targets captured from action metadata
 
 **Why**: The orchestrator calls `DecisionLoop.run()` and needs to read back what the agent found. Without this, there's no way to get the data out of a browser run programmatically.
 
-**What stays the same**: The decision loop itself — snapshot, interpret, plan, execute — is completely untouched. The guardrails, approval system, memory triggers, error handling — none of that changes. We're only changing what `run()` returns, not what it does.
+**What stays the same**: The decision loop itself — snapshot, interpret, plan, execute — remains unchanged. The guardrails, approval system, memory triggers, and error handling still drive the run.
 
 ---
 
