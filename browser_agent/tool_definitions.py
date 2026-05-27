@@ -84,6 +84,17 @@ _TOOLS: list[types.FunctionDeclaration] = [
         ),
     ),
     types.FunctionDeclaration(
+        name="scroll",
+        description="Scroll the page vertically with the mouse wheel. Positive dy scrolls down; negative dy scrolls up.",
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "dy": types.Schema(type="STRING", description="Vertical scroll amount, e.g. 900 or -900"),
+            },
+            required=["dy"],
+        ),
+    ),
+    types.FunctionDeclaration(
         name="select",
         description="Select an option from a dropdown/select element.",
         parameters=types.Schema(
@@ -253,6 +264,7 @@ _TOOLS: list[types.FunctionDeclaration] = [
             type="OBJECT",
             properties={
                 "reason": types.Schema(type="STRING", description="Summary of what was accomplished and why the task is complete"),
+                "output": types.Schema(type="STRING", description="Optional concise answer or extracted data for the caller"),
             },
             required=["reason"],
         ),
@@ -275,6 +287,7 @@ _CLI_NAME_MAP: dict[str, str] = {
     "tab_select": "tab-select",
     "state_save": "state-save",
     "state_load": "state-load",
+    "scroll": "mousewheel",
 }
 
 
@@ -298,6 +311,8 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
         parts.append(args["text"])
     elif name == "press":
         parts.append(args["key"])
+    elif name == "scroll":
+        parts.extend([args.get("dy", "900"), "0"])
     elif name == "select":
         parts.extend([args["ref"], args["value"]])
     elif name == "drag":

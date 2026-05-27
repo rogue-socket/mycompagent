@@ -24,6 +24,11 @@ class ToolCallParserTests(unittest.TestCase):
         action = parse_tool_call("press", {"key": "Enter"})
         self.assertEqual(action.command, "press")
 
+    def test_scroll(self) -> None:
+        action = parse_tool_call("scroll", {"dy": "900"})
+        self.assertEqual(action.command, "mousewheel")
+        self.assertEqual(action.args, ["900", "0"])
+
     def test_hover(self) -> None:
         action = parse_tool_call("hover", {"ref": "e25"})
         self.assertEqual(action.command, "hover")
