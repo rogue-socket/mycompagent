@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from typing import Iterable
+from urllib.parse import unquote, urljoin, urlparse
 
 from browser_agent.action_parser import ParsedAction
-from browser_agent.constants import ALLOWED_COMMANDS
 from browser_agent.snapshot_parser import ElementRef
 
 _RISK_KEYWORDS = re.compile(r"buy|checkout|purchase|pay|submit|order|place order", re.I)
@@ -59,6 +59,24 @@ def is_risky_action(action: ParsedAction, elements: Iterable[ElementRef]) -> boo
     return False
 
 
+def redundant_same_page_anchor_click(
+    action: ParsedAction,
+    elements: Iterable[ElementRef],
+    current_url: str,
+) -> ElementRef | None:
+    if action.command != "click" or not action.args or not current_url:
+        return None
+
+    target_ref = action.args[0]
+    for elem in elements:
+        if elem.ref != target_ref:
+            continue
+        if _points_to_current_fragment(elem.url, current_url):
+            return elem
+        return None
+    return None
+
+
 def detect_repeated_action(history: list[str], current: str, max_repeat: int = 3) -> bool:
     if len(history) < max_repeat:
         return False
@@ -83,3 +101,21 @@ def _detect_cycle(actions: list[str], max_cycle_len: int = 4, min_repeats: int =
 
 def detect_no_change(last_snapshot_hash: str, current_snapshot_hash: str, repeats: int) -> bool:
     return repeats >= 2 and last_snapshot_hash == current_snapshot_hash
+
+
+def _points_to_current_fragment(href: str, current_url: str) -> bool:
+    if not href:
+        return False
+
+    current = urlparse(current_url)
+    if not current.fragment:
+        return False
+
+    target = urlparse(urljoin(current_url, href))
+    return (
+        bool(target.fragment)
+        and unquote(target.fragment).lower() == unquote(current.fragment).lower()
+        and target.scheme == current.scheme
+        and target.netloc == current.netloc
+        and target.path == current.path
+    )

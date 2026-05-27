@@ -1,4 +1,9 @@
-"""Shared constants for browser agent."""
+"""Legacy Playwright CLI command registry.
+
+The active LLM action surface is declared in `tool_definitions.py`. This set is
+kept as a reference for older docs/tests and must not be treated as planner
+authorization.
+"""
 
 ALLOWED_COMMANDS = {
     # Core

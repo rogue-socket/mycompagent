@@ -1,7 +1,11 @@
 import unittest
 
 from browser_agent.action_parser import ParsedAction
-from browser_agent.guardrails import detect_repeated_action, is_risky_action
+from browser_agent.guardrails import (
+    detect_repeated_action,
+    is_risky_action,
+    redundant_same_page_anchor_click,
+)
 from browser_agent.snapshot_parser import ElementRef
 
 
@@ -31,6 +35,34 @@ class GuardrailTests(unittest.TestCase):
         action = _make_action("click", ["e1"])
         elements = [ElementRef(ref="e1", description="Search button")]
         self.assertFalse(is_risky_action(action, elements))
+
+    def test_redundant_same_page_anchor_click_detected(self) -> None:
+        action = _make_action("click", ["e1"])
+        elements = [
+            ElementRef(ref="e1", description='link "Culinary use"', url="#Culinary_use")
+        ]
+
+        result = redundant_same_page_anchor_click(
+            action,
+            elements,
+            "https://en.wikipedia.org/wiki/Snakehead_(fish)#Culinary_use",
+        )
+
+        self.assertIs(result, elements[0])
+
+    def test_different_same_page_anchor_is_allowed(self) -> None:
+        action = _make_action("click", ["e1"])
+        elements = [
+            ElementRef(ref="e1", description='link "References"', url="#References")
+        ]
+
+        result = redundant_same_page_anchor_click(
+            action,
+            elements,
+            "https://en.wikipedia.org/wiki/Snakehead_(fish)#Culinary_use",
+        )
+
+        self.assertIsNone(result)
 
 
 class RepeatedActionTests(unittest.TestCase):
