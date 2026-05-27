@@ -200,16 +200,37 @@ class TestRecording:
 
     def test_promotion(self, store: MemoryStore) -> None:
         lesson = Lesson(
-            lesson="recovery tip",
+            lesson=(
+                "When click fails with 'intercepts pointer events', "
+                "press Escape first."
+            ),
             category="error_recovery",
-            failed_command="fill",
-            error_pattern="err",
+            failed_command="click",
+            error_pattern="intercepts pointer events",
             use_count=4,
             triggered_domains=["a.com", "b.com"],
         )
         store.record_lesson(lesson)
         store.increment_use(lesson, "c.com")  # 5 uses, 3 domains → promote
         assert lesson.category == "best_practice"
+
+    def test_no_promotion_for_generic_single_command_recovery(
+        self, store: MemoryStore
+    ) -> None:
+        lesson = Lesson(
+            lesson=(
+                "When select fails with 'Error: locator.selectOption: Error: "
+                "Element is not a <select', try click instead."
+            ),
+            category="error_recovery",
+            failed_command="select",
+            error_pattern="element is not a <select",
+            use_count=4,
+            triggered_domains=["a.com", "b.com"],
+        )
+        store.record_lesson(lesson)
+        store.increment_use(lesson, "c.com")
+        assert lesson.category == "error_recovery"
 
     def test_no_promotion_with_domain_set(self, store: MemoryStore) -> None:
         lesson = Lesson(

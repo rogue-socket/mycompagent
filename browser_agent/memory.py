@@ -16,6 +16,7 @@ and records new lessons or increments existing ones.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -39,6 +40,9 @@ _PRUNE_MIN_USES = 5
 MAX_TIER1 = 10
 
 DEFAULT_MEMORY_PATH = "~/.browser_agent/memory.json"
+_GENERIC_SINGLE_COMMAND_RECOVERY_RE = re.compile(
+    r",\s*try\s+[a-z][a-z0-9_-]*\s+instead\.\s*$", re.IGNORECASE
+)
 
 
 def _today() -> str:
@@ -213,6 +217,8 @@ class MemoryStore:
             return
         if lesson.domain is not None:
             return
+        if _is_generic_single_command_recovery(lesson):
+            return
         if (
             lesson.use_count >= _PROMOTE_USE_COUNT
             and len(lesson.triggered_domains) >= _PROMOTE_DOMAIN_COUNT
@@ -286,6 +292,11 @@ class MemoryStore:
             if not any(ls.lesson == seed.lesson for ls in self.lessons):
                 self.lessons.append(seed)
         self.save()
+
+
+def _is_generic_single_command_recovery(lesson: Lesson) -> bool:
+    """Return whether a learned recovery is too vague for Tier 1 promotion."""
+    return bool(_GENERIC_SINGLE_COMMAND_RECOVERY_RE.search(lesson.lesson))
 
 
 def _is_duplicate_lesson(existing: Lesson, lesson: Lesson) -> bool:
