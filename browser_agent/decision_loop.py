@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import shlex
+import shutil
 import time
+from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from browser_agent.action_parser import ActionParseError, parse_tool_call
 from browser_agent.approval_system import ask_approval, requires_approval
-from browser_agent.guardrails import detect_no_change, detect_repeated_action
+from browser_agent.guardrails import (
+    detect_no_change,
+    detect_repeated_action,
+    redundant_same_page_anchor_click,
+)
 from browser_agent.interpreter import interpret_page
 from browser_agent.interpreter_state import to_dict as interpreter_to_dict
 from browser_agent.logger import append_jsonl, write_run_meta, write_snapshot
 from browser_agent.memory import MemoryStore, _domain_from_url, extract_lessons_from_run
 from browser_agent.playwright_executor import PlaywrightExecutionError, PlaywrightExecutor
-from browser_agent.planner import ChatPlanner, PlannerError
+from browser_agent.planner import ChatPlanner, PlannerConfigurationError, PlannerError
 from browser_agent.prompt_builder import build_page_message
-from browser_agent.snapshot_parser import compact_elements, load_snapshot_text, parse_snapshot
+from browser_agent.snapshot_parser import load_snapshot_text, parse_snapshot
+
+
+@dataclass(slots=True)
+class RunResult:
+    stop_reason: str
+    finish_output: str | None
+    steps_used: int
+    grounded_route: list[dict[str, str]]
 
 
 class DecisionLoop:
@@ -59,18 +76,24 @@ class DecisionLoop:
         self.last_step_error: str | None = None
         self.last_domain: str | None = None
         self._domain_context: str | None = None
+        self._debug_started_at = 0.0
+        self.clicked_route: list[dict[str, str]] = []
+        self.finish_output: str | None = None
 
-    def run(self) -> str:
+    def run(self) -> RunResult:
         start = time.monotonic()
-        self._log(f"Run started | mode={self.mode} model={self.config.get('model')}")
+        provider = self.config.get("llm_provider", "gemini")
+        model = self.config.get("active_model") or self.config.get("model")
+        self._log(f"Run started | mode={self.mode} provider={provider} model={model}")
 
         try:
+            self._open_browser()
+
             if self.debug:
                 self._log("Debug mode enabled: tracing + video")
-                self.executor.run("playwright-cli tracing-start")
-                self.executor.run("playwright-cli video-start")
-
-            self._open_browser()
+                self._debug_started_at = time.time()
+                self._run_debug_command("tracing-start", "playwright-cli tracing-start")
+                self._run_debug_command("video-start", "playwright-cli video-start")
 
             while self.step < int(self.config.get("max_steps", 50)):
                 self.step += 1
@@ -93,10 +116,6 @@ class DecisionLoop:
 
                 snapshot_state = parse_snapshot(snapshot_text)
                 snapshot_state.source_path = snapshot_path
-                snapshot_state.elements = compact_elements(
-                    snapshot_state.elements,
-                    int(self.config.get("max_elements", 60)),
-                )
 
                 snapshot_hash = _hash_text(snapshot_text)
                 if snapshot_hash == self.last_snapshot_hash and self.last_action_ok:
@@ -106,10 +125,16 @@ class DecisionLoop:
                 self.last_snapshot_hash = snapshot_hash
 
                 # ---- Interpret ----
+                max_elements = int(self.config.get("max_elements", 60))
                 interpreter_state = interpret_page(
                     snapshot_state,
                     self.executor,
-                    max_clickables=int(self.config.get("max_elements", 60)),
+                    max_clickables=int(
+                        self.config.get(
+                            "max_interpreter_elements",
+                            max(max_elements, 1200),
+                        )
+                    ),
                     max_visible_chars=int(self.config.get("max_visible_chars", 2000)),
                 )
                 interpreter_dict = interpreter_to_dict(interpreter_state)
@@ -151,6 +176,8 @@ class DecisionLoop:
                 min_text = int(self.config.get("min_visible_text", 200))
                 if interpreter_state.url.startswith("about:") or interpreter_state.url == "":
                     min_text = 0
+                if interpreter_state.clickable_elements:
+                    min_text = min(min_text, 80)
 
                 if len(interpreter_state.visible_text) < min_text:
                     self._log(
@@ -166,13 +193,31 @@ class DecisionLoop:
                 else:
                     self.short_text_retries = 0
 
+                if detect_no_change(
+                    self.last_snapshot_hash,
+                    snapshot_hash,
+                    self.snapshot_repeat_count,
+                ):
+                    warning = (
+                        "The page snapshot did not change after the last action. "
+                        "Choose an action that changes the page or advances to a new link; "
+                        "do not request another snapshot unless the user asked for one."
+                    )
+                    self.last_step_error = (
+                        f"{self.last_step_error}\n\n{warning}"
+                        if self.last_step_error
+                        else warning
+                    )
+
                 # ---- Plan (send page state, get tool call) ----
                 message = build_page_message(
                     interpreter_state,
                     self.action_history,
-                    max_elements=int(self.config.get("max_elements", 60)),
+                    max_elements=max_elements,
                     last_error=self.last_step_error,
                     domain_context=self._domain_context,
+                    task=self.task,
+                    evidence_text=snapshot_state.raw_text,
                 )
                 self.last_step_error = None
                 self._log(f"Step {self.step}: message length={len(message)} chars")
@@ -191,22 +236,34 @@ class DecisionLoop:
                         self._log(
                             f"Step {self.step}: reasoning: {tool_result.reasoning_text[:500]}"
                         )
+                        append_jsonl(
+                            self.paths.reasoning_log,
+                            self._reasoning_log_payload(tool_result),
+                        )
                     self._log(
                         f"Step {self.step}: tool_call={tool_result.tool_name}"
                         f"({tool_result.tool_args})"
                     )
+                except PlannerConfigurationError as exc:
+                    self.errors += 1
+                    self.stop_reason = "configuration_error"
+                    self._log(f"Step {self.step}: planner configuration error: {exc}")
+                    append_jsonl(
+                        self.paths.llm_log,
+                        self._planner_log_payload(
+                            message,
+                            error=str(exc),
+                            non_retryable=True,
+                        ),
+                    )
+                    break
                 except PlannerError as exc:
                     self.consecutive_planner_failures += 1
                     self.errors += 1
                     self._log(f"Step {self.step}: planner error: {exc}")
                     append_jsonl(
                         self.paths.llm_log,
-                        {
-                            "step": self.step,
-                            "error": str(exc),
-                            "tool_name": "",
-                            "tool_args": {},
-                        },
+                        self._planner_log_payload(message, error=str(exc)),
                     )
                     if self.errors >= int(self.config.get("max_errors", 5)):
                         self.stop_reason = "max_errors"
@@ -219,18 +276,14 @@ class DecisionLoop:
 
                 append_jsonl(
                     self.paths.llm_log,
-                    {
-                        "step": self.step,
-                        "tool_name": tool_result.tool_name,
-                        "tool_args": tool_result.tool_args,
-                        "reasoning": tool_result.reasoning_text,
-                    },
+                    self._planner_log_payload(message, tool_result=tool_result),
                 )
 
                 # ---- Handle finish tool ----
                 if tool_result.tool_name == "finish":
                     self.stop_reason = "completed"
                     reason = tool_result.tool_args.get("reason", "")
+                    self.finish_output = tool_result.tool_args.get("output") or reason
                     self._log(f"Step {self.step}: task completed — {reason}")
                     append_jsonl(
                         self.paths.actions_log,
@@ -240,6 +293,7 @@ class DecisionLoop:
                             "approval_status": "n/a",
                             "execution_result": "completed",
                             "reason": reason,
+                            "grounded_route": self.clicked_route,
                         },
                     )
                     break
@@ -272,15 +326,56 @@ class DecisionLoop:
                     continue
 
                 # ---- Guardrails ----
+                redundant_anchor = redundant_same_page_anchor_click(
+                    parsed_action,
+                    snapshot_state.elements,
+                    interpreter_state.url,
+                )
+                if redundant_anchor:
+                    self.last_step_error = (
+                        f"Element {redundant_anchor.ref} points to the section already "
+                        "shown in the current URL. Choose a different link or use the "
+                        "current page content instead."
+                    )
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "same_page_anchor_already_current",
+                            "href": redundant_anchor.url,
+                            "current_url": interpreter_state.url,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 if detect_repeated_action(self.action_history, parsed_action.action):
                     self.stop_reason = "repeated_action"
                     break
 
-                if detect_no_change(
-                    self.last_snapshot_hash, snapshot_hash, self.snapshot_repeat_count
-                ):
-                    self.stop_reason = "no_page_change"
-                    break
+                if parsed_action.command == "snapshot":
+                    self.last_step_error = (
+                        "A fresh snapshot is already captured at the start of every "
+                        "step. Choose click, scroll, press, or another action that "
+                        "changes the page state."
+                    )
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "snapshot_already_available",
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
 
                 # ---- Approval ----
                 approved = True
@@ -308,21 +403,32 @@ class DecisionLoop:
                     continue
 
                 # ---- Execute ----
+                target_element = self._target_element_for_click(
+                    parsed_action,
+                    snapshot_state.elements,
+                )
                 exec_result = self.executor.run(parsed_action.action)
                 exec_status = "ok" if exec_result.returncode == 0 else "error"
                 self._log(self._format_command_result(parsed_action.action, exec_result))
                 self.last_action_ok = exec_status == "ok"
 
+                action_payload: dict[str, Any] = {
+                    "step": self.step,
+                    "command": parsed_action.action,
+                    "approval_status": "approved",
+                    "execution_result": exec_status,
+                    "stdout": exec_result.stdout,
+                    "stderr": exec_result.stderr,
+                }
+                if target_element:
+                    route_entry = self._click_route_entry(target_element)
+                    action_payload["target"] = route_entry
+                    if exec_status == "ok":
+                        self.clicked_route.append(route_entry)
+
                 append_jsonl(
                     self.paths.actions_log,
-                    {
-                        "step": self.step,
-                        "command": parsed_action.action,
-                        "approval_status": "approved",
-                        "execution_result": exec_status,
-                        "stdout": exec_result.stdout,
-                        "stderr": exec_result.stderr,
-                    },
+                    action_payload,
                 )
 
                 self.action_history.append(parsed_action.action)
@@ -397,9 +503,27 @@ class DecisionLoop:
                     self._log(f"Memory: save failed: {exc}")
 
             if self.debug:
-                self.executor.run("playwright-cli tracing-stop")
-                self.executor.run(
-                    f"playwright-cli video-stop {self.paths.root / 'session.webm'}"
+                self._run_debug_command("tracing-stop", "playwright-cli tracing-stop")
+                copied_traces = self._copy_debug_traces()
+                append_jsonl(
+                    self.paths.debug_log,
+                    {
+                        "event": "trace-copy",
+                        "copied_files": [str(path) for path in copied_traces],
+                    },
+                )
+                video_path = self.paths.root / "session.webm"
+                self._run_debug_command(
+                    "video-stop",
+                    f"playwright-cli video-stop --filename {shlex.quote(str(video_path))}",
+                )
+                append_jsonl(
+                    self.paths.debug_log,
+                    {
+                        "event": "video-artifact",
+                        "path": str(video_path),
+                        "exists": video_path.exists(),
+                    },
                 )
             runtime = time.monotonic() - start
             write_run_meta(
@@ -408,12 +532,14 @@ class DecisionLoop:
                     "task": self.task,
                     "total_steps": self.step,
                     "stop_reason": self.stop_reason,
+                    "finish_output": self.finish_output,
+                    "grounded_route": self.clicked_route,
                     "runtime_seconds": round(runtime, 2),
                 },
             )
             self._log(f"Run stopped | reason={self.stop_reason} steps={self.step}")
 
-        return self.stop_reason
+        return self._run_result()
 
     def _open_browser(self) -> None:
         open_command = "playwright-cli open"
@@ -429,6 +555,118 @@ class DecisionLoop:
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[BrowserAgent {ts}] {message}", flush=True)
 
+    def _run_debug_command(self, label: str, command: str) -> None:
+        result = self.executor.run(command)
+        append_jsonl(
+            self.paths.debug_log,
+            {
+                "event": label,
+                "command": command,
+                "returncode": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+            },
+        )
+        self._log(
+            f"Debug {label}: rc={result.returncode} "
+            f"stdout_len={len(result.stdout or '')} stderr_len={len(result.stderr or '')}"
+        )
+
+    def _planner_log_payload(
+        self,
+        message: str,
+        *,
+        tool_result: Any | None = None,
+        error: str | None = None,
+        non_retryable: bool = False,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "step": self.step,
+            "prompt_chars": len(message),
+            "debug_artifacts": self._debug_artifact_paths(),
+        }
+        if tool_result is not None:
+            payload.update(
+                {
+                    "tool_name": tool_result.tool_name,
+                    "tool_args": tool_result.tool_args,
+                    "reasoning": tool_result.reasoning_text,
+                    "planner_latency_seconds": tool_result.latency_seconds,
+                    "planner_attempts": tool_result.attempts,
+                    "planner_rate_limited": tool_result.rate_limited,
+                }
+            )
+        else:
+            payload.update({"error": error or "", "tool_name": "", "tool_args": {}})
+            if non_retryable:
+                payload["non_retryable"] = True
+        return payload
+
+    def _debug_artifact_paths(self) -> dict[str, Any]:
+        return {
+            "enabled": self.debug,
+            "debug_log": str(self.paths.debug_log),
+            "traces_dir": str(self.paths.traces),
+            "video": str(self.paths.root / "session.webm"),
+        }
+
+    def _run_result(self) -> RunResult:
+        return RunResult(
+            stop_reason=self.stop_reason,
+            finish_output=self.finish_output,
+            steps_used=self.step,
+            grounded_route=list(self.clicked_route),
+        )
+
+    def _reasoning_log_payload(self, tool_result: Any) -> dict[str, Any]:
+        return {
+            "step": self.step,
+            "tool_name": tool_result.tool_name,
+            "tool_args": tool_result.tool_args,
+            "reasoning": tool_result.reasoning_text,
+        }
+
+    @staticmethod
+    def _target_element_for_click(action: Any, elements: list[Any]) -> Any | None:
+        if action.command != "click" or not action.args:
+            return None
+        target_ref = action.args[0]
+        for elem in elements:
+            if elem.ref == target_ref:
+                return elem
+        return None
+
+    @staticmethod
+    def _click_route_entry(element: Any) -> dict[str, str]:
+        return {
+            "ref": element.ref,
+            "label": _label_from_description(element.description),
+            "description": element.description,
+            "href": element.url,
+        }
+
+    def _copy_debug_traces(self) -> list[Path]:
+        source_root = Path(".playwright-cli/traces")
+        if not source_root.exists():
+            return []
+
+        copied: list[Path] = []
+        threshold = max(self._debug_started_at - 1.0, 0.0)
+        for source in source_root.rglob("*"):
+            if not source.is_file():
+                continue
+            try:
+                if source.stat().st_mtime < threshold:
+                    continue
+            except OSError:
+                continue
+            relative = source.relative_to(source_root)
+            destination = self.paths.traces / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            copied.append(destination)
+        return copied
+
     @staticmethod
     def _format_command_result(label: str, result: Any) -> str:
         stdout = result.stdout or ""
@@ -438,6 +676,11 @@ class DecisionLoop:
             f"stdout_len={len(stdout)} stderr_len={len(stderr)}\n"
             f"STDOUT:\n{stdout}\nSTDERR:\n{stderr}"
         )
+
+
+def _label_from_description(description: str) -> str:
+    match = re.search(r'"([^"]+)"', description or "")
+    return match.group(1) if match else (description or "")
 
 
 def _hash_text(text: str) -> str:

@@ -15,12 +15,14 @@ class RunPaths:
         self.root = root
         self.snapshots = root / "snapshots"
         self.screenshots = root / "screenshots"
+        self.traces = root / "traces"
         self.actions_log = root / "actions.jsonl"
         self.llm_log = root / "llm_responses.jsonl"
         self.browser_state_log = root / "browser_state.jsonl"
         self.interpreter_state_log = root / "interpreter_state.jsonl"
         self.reasoning_log = root / "agent_reasoning.jsonl"
         self.memory_events_log = root / "memory_events.jsonl"
+        self.debug_log = root / "debug_artifacts.jsonl"
         self.run_meta = root / "run_meta.json"
 
 
@@ -35,6 +37,7 @@ def create_run_paths(base_dir: str = "runs") -> tuple[str, RunPaths]:
     paths = RunPaths(root)
     paths.snapshots.mkdir(parents=True, exist_ok=True)
     paths.screenshots.mkdir(parents=True, exist_ok=True)
+    paths.traces.mkdir(parents=True, exist_ok=True)
     return run_id, paths
 
 
