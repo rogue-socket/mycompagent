@@ -311,6 +311,74 @@ class TestPostRunLearning:
         assert len(store.lessons) == before
         assert seed.use_count == before_use_count + 1
 
+    def test_learns_short_multi_step_recovery_that_completes(
+        self, store: MemoryStore, tmp_path: Path
+    ) -> None:
+        actions_log = tmp_path / "actions.jsonl"
+        actions_log.write_text(
+            json.dumps(
+                {
+                    "step": 1,
+                    "command": "playwright-cli select e6 High",
+                    "execution_result": "error",
+                    "stderr": (
+                        "Error: locator.selectOption: Error: Element is not a "
+                        "<select> element"
+                    ),
+                    "stdout": "",
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "step": 2,
+                    "command": "playwright-cli click e6",
+                    "execution_result": "ok",
+                    "stderr": "",
+                    "stdout": "Page URL: http://127.0.0.1:8766/workflow-b.html",
+                    "target": {
+                        "ref": "e6",
+                        "label": "Priority",
+                        "description": 'combobox "Priority"',
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "step": 3,
+                    "command": "playwright-cli click e11",
+                    "execution_result": "ok",
+                    "stderr": "",
+                    "stdout": "Page URL: http://127.0.0.1:8766/workflow-b.html",
+                    "target": {
+                        "ref": "e11",
+                        "label": "High",
+                        "description": 'option "High"',
+                    },
+                }
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "step": 4,
+                    "command": "finish",
+                    "execution_result": "completed",
+                    "reason": "Task complete: Priority is High.",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        extract_lessons_from_run(actions_log, store)
+
+        lesson = next(
+            lesson for lesson in store.lessons if lesson.failed_command == "select"
+        )
+        assert "click the combobox, then click the matching option" in lesson.lesson
+        assert "try click instead" not in lesson.lesson
+
     def test_ignores_consecutive_failures(
         self, store: MemoryStore, tmp_path: Path
     ) -> None:

@@ -329,6 +329,8 @@ _KNOWN_ERROR_PHRASES = [
     "navigation interrupted",
 ]
 
+_MAX_SHORT_RECOVERY_ACTIONS = 3
+
 
 def extract_lessons_from_run(actions_log: Path, memory: MemoryStore) -> None:
     """Scan a run's action log for failure→recovery patterns and learn."""
@@ -341,27 +343,28 @@ def extract_lessons_from_run(actions_log: Path, memory: MemoryStore) -> None:
 
     for i in range(len(actions) - 1):
         curr = actions[i]
-        nxt = actions[i + 1]
-
         if curr.get("execution_result") != "error":
             continue
-        if nxt.get("execution_result") != "ok":
+
+        recovery_actions = _collect_recovery_actions(actions, i + 1)
+        if not recovery_actions:
             continue
 
         failed_cmd = _extract_command_name(curr.get("command", ""))
-        recovery_cmd = _extract_command_name(nxt.get("command", ""))
+        recovery_cmd = _extract_command_name(recovery_actions[0].get("command", ""))
         error_text = curr.get("stderr", "")
 
         if not _is_worthy_lesson(failed_cmd, recovery_cmd, error_text):
             continue
 
         error_phrase = _extract_key_phrase(error_text)
-        domain = _extract_domain_from_stdout(nxt.get("stdout", ""))
+        domain = _extract_domain_from_actions(recovery_actions)
+        recovery_text = _describe_recovery(curr, recovery_actions)
 
         lesson = Lesson(
             lesson=(
                 f"When {failed_cmd} fails with '{_short_error(error_text)}', "
-                f"try {recovery_cmd} instead."
+                f"{recovery_text}."
             ),
             category="error_recovery",
             failed_command=failed_cmd,
@@ -374,6 +377,116 @@ def extract_lessons_from_run(actions_log: Path, memory: MemoryStore) -> None:
         memory.record_lesson(lesson)
 
     memory.save()
+
+
+def _collect_recovery_actions(
+    actions: list[dict[str, Any]], start_index: int
+) -> list[dict[str, Any]]:
+    successful: list[dict[str, Any]] = []
+
+    for action in actions[start_index:]:
+        result = action.get("execution_result")
+        if result == "ok":
+            successful.append(action)
+            if len(successful) > _MAX_SHORT_RECOVERY_ACTIONS:
+                return successful[:1]
+            continue
+        if result == "completed":
+            return successful
+        break
+
+    return successful[:1]
+
+
+def _extract_domain_from_actions(actions: list[dict[str, Any]]) -> str | None:
+    for action in actions:
+        domain = _extract_domain_from_stdout(action.get("stdout", ""))
+        if domain:
+            return domain
+    return None
+
+
+def _describe_recovery(
+    failed_action: dict[str, Any], recovery_actions: list[dict[str, Any]]
+) -> str:
+    select_recovery = _describe_select_recovery(failed_action, recovery_actions)
+    if select_recovery:
+        return select_recovery
+
+    phrases = [_describe_recovery_action(action) for action in recovery_actions]
+    if len(phrases) == 1:
+        command = _extract_command_name(recovery_actions[0].get("command", ""))
+        if phrases[0] == command:
+            return f"try {command} instead"
+    return ", then ".join(phrases)
+
+
+def _describe_select_recovery(
+    failed_action: dict[str, Any], recovery_actions: list[dict[str, Any]]
+) -> str | None:
+    if _extract_command_name(failed_action.get("command", "")) != "select":
+        return None
+    if len(recovery_actions) < 2:
+        return None
+
+    first, second = recovery_actions[0], recovery_actions[1]
+    if _extract_command_name(first.get("command", "")) != "click":
+        return None
+    if _extract_command_name(second.get("command", "")) != "click":
+        return None
+
+    first_kind = _target_kind(first)
+    second_kind = _target_kind(second)
+    if first_kind not in {"button", "combobox"} or second_kind != "option":
+        return None
+
+    control_name = "combobox" if first_kind == "combobox" else "control"
+    option_name = "matching option"
+    if not _target_matches_select_value(failed_action, second):
+        option_name = "option"
+    return f"click the {control_name}, then click the {option_name}"
+
+
+def _describe_recovery_action(action: dict[str, Any]) -> str:
+    command = _extract_command_name(action.get("command", ""))
+    target_kind = _target_kind(action)
+    if command == "click" and target_kind in {"button", "combobox", "option"}:
+        return f"click the {target_kind}"
+    return command
+
+
+def _target_kind(action: dict[str, Any]) -> str | None:
+    target = action.get("target")
+    if not isinstance(target, dict):
+        return None
+    description = str(target.get("description") or "").strip().lower()
+    if not description:
+        return None
+    return description.split(maxsplit=1)[0].rstrip(":")
+
+
+def _target_matches_select_value(
+    failed_action: dict[str, Any], recovery_action: dict[str, Any]
+) -> bool:
+    requested_value = _select_requested_value(failed_action.get("command", ""))
+    if not requested_value:
+        return False
+    target = recovery_action.get("target")
+    if not isinstance(target, dict):
+        return False
+    label = str(target.get("label") or "").strip()
+    return label.lower() == requested_value.lower()
+
+
+def _select_requested_value(command: str) -> str | None:
+    parts = command.split(maxsplit=3)
+    if len(parts) >= 4 and parts[0] == "playwright-cli" and parts[1] == "select":
+        return parts[3].strip("\"'")
+
+    parts = command.split(maxsplit=2)
+    if len(parts) >= 3 and parts[0] == "select":
+        return parts[2].strip("\"'")
+    return None
 
 
 def _is_worthy_lesson(failed_cmd: str, recovery_cmd: str, error_text: str) -> bool:
