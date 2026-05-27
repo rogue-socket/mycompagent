@@ -296,18 +296,19 @@ tests: 112 passed
 - Memory recall is advisory. A matched lesson does not force the planner to take
   the recovery action. The new prompt note improves this specific
   custom-combobox case but does not make memory deterministic.
-- The learned lesson, `try click instead`, is too underspecified after the first
-  click succeeds. It tells the planner to click, but not how to complete the
-  second half of the recovery: inspect the opened menu and click the target
-  option ref. The prompt now supplies that missing operational guidance only for
-  the recognized non-native-select failure shape.
+- The lesson learned during this evaluation, `try click instead`, was too
+  underspecified after the first click succeeded. It told the planner to click,
+  but not how to complete the second half of the recovery: inspect the opened
+  menu and click the target option ref. The prompt now supplies that missing
+  operational guidance only for the recognized non-native-select failure shape.
 - Before the fix, visible option refs existed in Workflow B's raw snapshot but
   were filtered out of the interpreted clickable list. The planner ignored the
   best direct click (`e11`) and chose keyboard navigation instead. After the fix,
   `e11` is exposed as an `option` target and the real replay clicked it.
-- Post-run learning treated the adjacent `select error -> click combobox ok` pair
-  as the successful recovery. That is only a partial recovery; the task was not
-  complete until a later option click succeeded.
+- At the time of this evaluation, post-run learning treated the adjacent
+  `select error -> click combobox ok` pair as the successful recovery. That was
+  only a partial recovery; the task was not complete until a later option click
+  succeeded.
 - Promotion risk exists if a partial lesson is repeatedly reinforced. The lesson
   can get a high `use_count` even though it does not encode the full successful
   action sequence.
@@ -318,10 +319,10 @@ The memory storage and retrieval layer is functioning. The first
 memory-to-action grounding issue was fixed by exposing ARIA option refs and
 adding a targeted prompt note after non-native-select failures.
 
-Remaining work is in learning quality:
+Learning-quality follow-up status:
 
-- Avoid learning a one-step recovery from adjacent action pairs when the task
-  only succeeded after a longer sequence.
+- Completed: avoid learning a one-step recovery from adjacent action pairs when
+  the task only succeeded after a longer sequence.
 - Preserve auditability by continuing to report both memory events and browser
   routes in future hard runs.
 
@@ -346,11 +347,13 @@ Remaining work is in learning quality:
    <select> element`, the prompt now prefers click-based option selection over
    keyboard guessing if option/button refs are visible.
 
-3. Improve post-run learning beyond adjacent pairs.
+3. Completed post-run learning beyond adjacent pairs.
 
-   The current extractor learns from `error -> immediate ok`. For UI recoveries,
-   the useful lesson may be a short sequence ending in completion or a meaningful
-   page-state change.
+   Implemented in `browser_agent/memory.py` and covered by
+   `tests/test_memory.py::TestPostRunLearning::test_learns_short_multi_step_recovery_that_completes`.
+   The extractor now keeps a short sequence of successful actions when it reaches
+   `finish`, so the combobox case learns `click the combobox, then click the
+   matching option` instead of only `try click instead`.
 
 4. Consider storing recovery shape metadata.
 

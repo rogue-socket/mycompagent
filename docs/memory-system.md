@@ -211,7 +211,16 @@ In the decision loop:
 ```
 Step N: command A → error (stderr contains "some error")
 Step N+1: command B → ok
+Step N+2: command C → ok
+Step N+3: finish → completed
 ```
+
+For simple recoveries, the immediate `ok` action after the failure is enough.
+For short UI recoveries that reach `finish`, the extractor keeps the successful
+action sequence, up to three actions, so lessons can describe multi-step
+patterns such as clicking a custom combobox and then the matching option. If the
+run does not reach completion, extraction falls back to the immediate `ok`
+action to avoid over-learning from open-ended progress.
 
 If A ≠ B and the error is substantive, a new `error_recovery` lesson is recorded (or an existing one's `use_count` is incremented).
 
@@ -274,9 +283,10 @@ The evaluation confirmed the core loop works:
 
 It also exposed important gaps:
 
-- Post-run extraction learns from adjacent `error` -> `ok` action pairs. In the
-  real flow, `select -> click combobox` was only a partial recovery; the task was
-  complete only after clicking the visible `High` option and finishing.
+- At the time of the evaluation, post-run extraction learned from adjacent
+  `error` -> `ok` action pairs. In the real flow, `select -> click combobox` was
+  only a partial recovery; the task was complete only after clicking the visible
+  `High` option and finishing.
 - Repeated recalls can reinforce a partial lesson. If promoted too early, a
   high-use but underspecified lesson could enter Tier 1.
 - Domain recall still only surfaces existing `site_specific` lessons; post-run
@@ -298,8 +308,11 @@ The first memory-to-action grounding fix was implemented on 2026-05-27:
   `select e6 High -> error`, `error_recall matched=1`, `click e6 -> ok`, `click
   e11 -> ok`, and `finish -> completed`.
 
-The next memory-related work should focus on learning the full multi-step
-recovery sequence, not only the adjacent `select -> click combobox` pair.
+The follow-up post-run learning fix now records short completed recovery
+sequences instead of only the adjacent `select -> click combobox` pair.
+`tests/test_memory.py` covers the ARIA combobox case and expects the stored
+lesson to say `click the combobox, then click the matching option`. Remaining
+memory work is focused on promotion quality for learned lessons.
 
 ## Seed Lessons
 

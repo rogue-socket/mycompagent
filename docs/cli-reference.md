@@ -202,7 +202,7 @@ Last updated: 2026-03-13
 
 - **Tier 1** lessons (`tool_fallback`, `best_practice`) are injected into the LLM's system prompt at startup. Always active.
 - **Tier 2** lessons (`error_recovery`, `site_specific`) are searched on demand when a command fails or a new domain is visited.
-- **Post-run learning** scans the action log after each run for failure→recovery patterns and records new lessons.
+- **Post-run learning** scans the action log after each run for failure→recovery patterns, including short completed recovery sequences, and records new lessons.
 - **Promotion**: `error_recovery` lessons are promoted to `best_practice` (Tier 1) after 5+ uses across 3+ domains.
 - **Pruning**: Learned lessons older than 90 days with fewer than 5 uses are removed on load. Seed lessons are never pruned.
 
