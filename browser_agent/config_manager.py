@@ -24,6 +24,11 @@ DEFAULT_MIN_VISIBLE_TEXT = 200
 DEFAULT_SESSION = ""
 DEFAULT_START_URL = ""
 DEFAULT_USE_NPX = False
+DEFAULT_LLM_PROVIDER = "gemini"
+DEFAULT_CODEX_BIN = "codex"
+DEFAULT_CODEX_MODEL = ""
+DEFAULT_CODEX_PROFILE = ""
+DEFAULT_CODEX_SANDBOX = "read-only"
 
 
 class ConfigError(RuntimeError):
@@ -51,6 +56,11 @@ class ConfigManager:
             "session": DEFAULT_SESSION,
             "start_url": DEFAULT_START_URL,
             "use_npx": DEFAULT_USE_NPX,
+            "llm_provider": DEFAULT_LLM_PROVIDER,
+            "codex_bin": DEFAULT_CODEX_BIN,
+            "codex_model": DEFAULT_CODEX_MODEL,
+            "codex_profile": DEFAULT_CODEX_PROFILE,
+            "codex_sandbox": DEFAULT_CODEX_SANDBOX,
         }
 
     def exists(self) -> bool:
@@ -92,9 +102,12 @@ class ConfigManager:
         return config
 
     def validate(self, config: dict[str, Any]) -> None:
-        if not str(config.get("api_key", "")).strip():
+        provider = str(config.get("llm_provider", DEFAULT_LLM_PROVIDER))
+        if provider not in {"gemini", "codex"}:
+            raise ConfigError("Config value 'llm_provider' must be gemini or codex")
+        if provider == "gemini" and not str(config.get("api_key", "")).strip():
             raise ConfigError("Config value 'api_key' must be non-empty")
-        if not str(config.get("model", "")).strip():
+        if provider == "gemini" and not str(config.get("model", "")).strip():
             raise ConfigError("Config value 'model' must be non-empty")
         if str(config.get("mode", "")) not in {"safe", "hybrid", "auto"}:
             raise ConfigError("Config value 'mode' must be safe, hybrid, or auto")
@@ -121,8 +134,11 @@ class ConfigManager:
         model: str | None,
         mode: str | None,
         max_steps: int | None,
+        llm_provider: str | None = None,
     ) -> dict[str, Any]:
         merged = dict(config)
+        if llm_provider:
+            merged["llm_provider"] = llm_provider
         if model:
             merged["model"] = model
         if mode:

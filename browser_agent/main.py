@@ -11,7 +11,7 @@ from browser_agent.decision_loop import DecisionLoop
 from browser_agent.logger import append_jsonl, create_run_paths
 from browser_agent.memory import MAX_TIER1, MemoryStore, _TIER1_CATEGORIES
 from browser_agent.playwright_executor import PlaywrightExecutor
-from browser_agent.planner import ChatPlanner
+from browser_agent.planner import ChatPlanner, CodexPlanner, PlannerError
 from browser_agent.prompt_builder import build_system_instruction
 from browser_agent.skill_checker import SkillCheckError, check_playwright_skill
 from browser_agent.skill_loader import SkillLoadError, load_skill_text
@@ -26,6 +26,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hybrid", action="store_true", help="Require approval for risky actions")
     parser.add_argument("--auto", action="store_true", help="Fully autonomous mode")
     parser.add_argument("--model", type=str, default=None, help="LLM model override")
+    parser.add_argument(
+        "--llm-provider",
+        choices=("gemini", "codex"),
+        default=None,
+        help="LLM backend override",
+    )
     parser.add_argument("--max-steps", type=int, default=None, help="Maximum agent steps")
     parser.add_argument("--session", type=str, default=None, help="Playwright CLI session name")
     parser.add_argument("--start-url", type=str, default=None, help="Open browser at this URL")
@@ -146,6 +152,7 @@ def main() -> int:
         config = manager.load()
         config = manager.merge_overrides(
             config,
+            llm_provider=args.llm_provider,
             model=args.model,
             mode=mode_override,
             max_steps=args.max_steps,
@@ -176,13 +183,32 @@ def main() -> int:
         f"({len(memory.lessons)} lessons, {len(tier1)} tier-1)"
     )
 
-    planner = ChatPlanner(
-        api_key=str(config["api_key"]),
-        model_name=str(config["model"]),
-        system_instruction=build_system_instruction(
-            args.task, skill_text, tier1_lessons=tier1
-        ),
+    system_instruction = build_system_instruction(
+        args.task, skill_text, tier1_lessons=tier1
     )
+    provider = str(config.get("llm_provider", "gemini"))
+    try:
+        if provider == "codex":
+            codex_model = args.model or str(config.get("codex_model") or "") or None
+            config["active_model"] = codex_model or "codex-default"
+            planner = CodexPlanner(
+                model_name=codex_model,
+                system_instruction=system_instruction,
+                codex_bin=str(config.get("codex_bin") or "codex"),
+                cwd=repo_root,
+                profile=str(config.get("codex_profile") or "") or None,
+                sandbox=str(config.get("codex_sandbox") or "read-only"),
+            )
+        else:
+            config["active_model"] = str(config["model"])
+            planner = ChatPlanner(
+                api_key=str(config["api_key"]),
+                model_name=str(config["model"]),
+                system_instruction=system_instruction,
+            )
+    except PlannerError as exc:
+        print(f"Planner setup failed: {exc}", file=sys.stderr)
+        return 2
     session = args.session or str(config.get("session") or "") or None
     start_url = args.start_url or str(config.get("start_url") or "") or None
     use_npx = bool(args.use_npx) or bool(config.get("use_npx", False))
