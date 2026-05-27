@@ -1,11 +1,12 @@
 # Browser Agent
 
-A **DOM-driven browser agent** powered by Gemini's native function calling. The agent uses a **multi-turn chat** with structured tool calls — no free-text JSON parsing.
+A **DOM-driven browser agent** with pluggable LLM planning. The default Gemini path uses native function calling; the optional Codex path uses the local `../codex-agent` wrapper and strict JSON actions.
 
-Architecture: **Snapshot → Interpreter → Multi-turn Chat (ReAct reasoning + function call) → Execution → Result fed back to chat**
+Architecture: **Snapshot → Interpreter → Planner (ReAct reasoning + action) → Execution → Result fed back**
 
 Key design choices:
 - **Native function calling** — the LLM returns typed `FunctionCall` objects, not free-text JSON. Eliminates parsing failures.
+- **Codex wrapper option** — `--llm-provider codex` routes planning through `codex_agent.CodexLLM`.
 - **Multi-turn conversation** — the chat maintains history across steps. The LLM sees its prior reasoning and tool results.
 - **Chain-of-thought** — the system prompt requires step-by-step reasoning (Observe → Think → Act) before every tool call.
 - **Few-shot examples** — the system instruction includes worked examples of correct reasoning patterns.
@@ -19,9 +20,23 @@ Key design choices:
 - Python 3.11+
 - Playwright CLI installed
 - `google-genai` Python package (v1.66+)
-- A Gemini API key
+- A Gemini API key for the default `gemini` provider, or an installed `../codex-agent` wrapper for `--llm-provider codex`
 
 ### 1.2 Install Python dependencies
+
+Conda setup used for this project on this machine:
+
+```bash
+/opt/miniconda3/bin/conda create -n mycompagent python=3.11 pip -y
+source /opt/miniconda3/bin/activate mycompagent
+python -m pip install --upgrade pip
+pip install -r requirements-browser-agent.txt
+pip install -r requirements-dev.txt
+pip install -e .
+pip install -e ../codex-agent  # optional: enables --llm-provider codex
+```
+
+Virtualenv alternative:
 
 ```bash
 python3 -m venv .venv
@@ -82,6 +97,15 @@ browser-agent "find best padel rackets" --auto --start-url https://google.com
 ```bash
 browser-agent "open youtube.com" --safe
 ```
+
+To use the local Codex wrapper from `../codex-agent` instead of Gemini:
+
+```bash
+browser-agent "open example.com" --auto --llm-provider codex --start-url https://example.com
+```
+
+The Codex path uses `codex_agent.CodexLLM` and does not require the Gemini API key,
+but `../codex-agent` must be installed in the active environment.
 
 ### 3.2 Run with a start URL
 
@@ -217,19 +241,19 @@ Query examples:
 
 ```bash
 # All memory activity for a run
-cat runs/run_*/memory_events.jsonl | python -m json.tool
+tail -n 50 runs/run_*/memory_events.jsonl
 
 # Did Trigger A (error recall) fire? What matched?
-grep "error_recall" runs/run_*/memory_events.jsonl
+rg '"event": "error_recall"' runs/run_*/memory_events.jsonl
 
 # Did Trigger B (domain recall) fire?
-grep "domain_recall" runs/run_*/memory_events.jsonl
+rg '"event": "domain_recall"' runs/run_*/memory_events.jsonl
 
 # Any promotions across all runs?
-grep "lesson_promoted" runs/run_*/memory_events.jsonl
+rg '"event": "lesson_promoted"' runs/run_*/memory_events.jsonl
 ```
 
-The memory store itself is persisted at `~/.browser_agent/memory.json`. See [docs/memory-system.md](docs/memory-system.md) for the full architecture.
+The memory store itself is persisted at `~/.browser_agent/memory.json`. See [docs/memory-system.md](docs/memory-system.md) for the full architecture and [docs/memory-real-flow-evaluation-2026-05-27.md](docs/memory-real-flow-evaluation-2026-05-27.md) for the latest real browser-flow findings.
 
 ## 7) Manual Playwright CLI Commands
 
@@ -268,12 +292,16 @@ Use `--hybrid` or `--auto` if you want fewer prompts.
 Run these once to confirm Playwright CLI and the agent are working:
 
 ```bash
+python -m pytest tests -q
 playwright-cli open https://example.com
 playwright-cli snapshot
 playwright-cli close
 
 browser-agent "open example.com" --safe
 ```
+
+As of 2026-05-27, run the suite in the `mycompagent` Conda env. Memory-system
+behavior and focused coverage are documented in `docs/memory-system.md`.
 
 If `playwright-cli` is missing, use:
 

@@ -57,12 +57,16 @@ browser-agent "Find the top news on Hacker News" --auto
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
-| `--model MODEL` | string | `gemini-1.5-flash` | Override the LLM model (must be a Gemini model). |
+| `--model MODEL` | string | `gemini-1.5-flash` | Override the active LLM model. For `--llm-provider codex`, this is passed to Codex. |
+| `--llm-provider PROVIDER` | enum | `gemini` | Select `gemini` or `codex` as the planner backend. |
 | `--max-steps N` | int | `50` | Maximum number of agent steps before stopping. |
 
 ```bash
 # Use a different model with more steps
 browser-agent "Summarize the Wikipedia page on AI" --model gemini-2.0-flash --max-steps 100
+
+# Use the local codex-agent wrapper instead of Gemini
+browser-agent "Open example.com" --llm-provider codex --start-url https://example.com
 
 # Quick task with a low step limit
 browser-agent "Google 'weather today'" --auto --max-steps 10
@@ -201,6 +205,13 @@ Last updated: 2026-03-13
 - **Post-run learning** scans the action log after each run for failure→recovery patterns and records new lessons.
 - **Promotion**: `error_recovery` lessons are promoted to `best_practice` (Tier 1) after 5+ uses across 3+ domains.
 - **Pruning**: Learned lessons older than 90 days with fewer than 5 uses are removed on load. Seed lessons are never pruned.
+
+The latest real-flow memory evaluation is documented in
+[`docs/memory-real-flow-evaluation-2026-05-27.md`](memory-real-flow-evaluation-2026-05-27.md).
+It verifies that real Playwright failures can be learned and recalled across
+runs. The first custom-combobox grounding fix now exposes ARIA `option` refs and
+adds recovery guidance after non-native `selectOption` failures, so recalled
+advice can be converted into a click on the visible matching option.
 
 ---
 
