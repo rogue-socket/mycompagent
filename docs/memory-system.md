@@ -144,7 +144,7 @@ The memory is **hybrid** because it combines two different retrieval strategies:
 
 2. **Structured field matching** powers Tier 2 retrieval. Instead of semantic search, lessons are matched by comparing `failed_command` and `error_pattern` fields against the actual error, or `domain` against the current URL. This is fast, deterministic, and debuggable.
 
-3. **Automatic promotion** bridges the two tiers. A lesson starts as `error_recovery` (Tier 2) but gets promoted to `best_practice` (Tier 1) once it proves itself universal — triggered 5+ times across 3+ different domains. This means the system self-optimizes: patterns that keep recurring graduate into always-on advice.
+3. **Automatic promotion** bridges the two tiers. A lesson starts as `error_recovery` (Tier 2) but gets promoted to `best_practice` (Tier 1) once it proves itself universal and specific enough — triggered 5+ times across 3+ different domains, while avoiding generic one-command advice like `try click instead`. This means the system self-optimizes: patterns that keep recurring graduate into always-on advice.
 
 ### Tier 1 — Proactive (system prompt)
 
@@ -231,6 +231,7 @@ An `error_recovery` lesson is automatically promoted to `best_practice` (and thu
 - `use_count >= 5` — it's been triggered enough times
 - `triggered_domains >= 3` — it's proven useful across multiple sites
 - `domain is None` — it's not site-specific
+- The lesson is not generic one-command advice such as `try click instead`
 
 ### 5. Pruning
 
@@ -287,8 +288,9 @@ It also exposed important gaps:
   `error` -> `ok` action pairs. In the real flow, `select -> click combobox` was
   only a partial recovery; the task was complete only after clicking the visible
   `High` option and finishing.
-- Repeated recalls can reinforce a partial lesson. If promoted too early, a
-  high-use but underspecified lesson could enter Tier 1.
+- Repeated recalls can reinforce a partial lesson. At the time, high-use but
+  underspecified lessons had a promotion path; generic one-command recovery
+  lessons are now blocked from promotion.
 - Domain recall still only surfaces existing `site_specific` lessons; post-run
   learning currently creates `error_recovery` lessons, not site-specific guidance.
 - The store relies on stale pruning rather than a hard total-size cap.
@@ -311,8 +313,11 @@ The first memory-to-action grounding fix was implemented on 2026-05-27:
 The follow-up post-run learning fix now records short completed recovery
 sequences instead of only the adjacent `select -> click combobox` pair.
 `tests/test_memory.py` covers the ARIA combobox case and expects the stored
-lesson to say `click the combobox, then click the matching option`. Remaining
-memory work is focused on promotion quality for learned lessons.
+lesson to say `click the combobox, then click the matching option`.
+
+The promotion-quality follow-up blocks generic single-command recovery lessons,
+such as `try click instead`, from entering Tier 1 even if repeated recalls raise
+their `use_count` across multiple domains.
 
 ## Seed Lessons
 

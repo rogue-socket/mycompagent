@@ -309,9 +309,10 @@ tests: 112 passed
   `select error -> click combobox ok` pair as the successful recovery. That was
   only a partial recovery; the task was not complete until a later option click
   succeeded.
-- Promotion risk exists if a partial lesson is repeatedly reinforced. The lesson
-  can get a high `use_count` even though it does not encode the full successful
-  action sequence.
+- At the time of this evaluation, promotion risk existed if a partial lesson was
+  repeatedly reinforced. The follow-up promotion guard now keeps generic
+  one-command advice such as `try click instead` in Tier 2 even if it reaches the
+  normal use/domain thresholds.
 
 ## Implications
 
