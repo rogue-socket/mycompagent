@@ -234,6 +234,73 @@ On every `load()`, stale lessons are removed:
 
 When recording a lesson, if an existing lesson has the same `(failed_command, error_pattern)` pair, the existing one's `use_count` is incremented instead of creating a duplicate.
 
+## Current Test Findings
+
+Verified on 2026-05-27 in the `mycompagent` Conda environment:
+
+```bash
+python -m pytest tests/test_memory.py -q
+```
+
+Result: 35 tests passed.
+
+The former seed-deduplication mismatch is resolved. The seeded fill fallback
+lesson already has `(failed_command="fill", error_pattern="too many arguments")`,
+so `MemoryStore.record_lesson()` increments that seed instead of creating a
+duplicate learned lesson. Tests now assert that intended behavior.
+
+The 2026-05-27 review also fixed a separate deduplication bug: lessons without a
+`failed_command` or `error_pattern` are now deduped by exact `(category, domain,
+lesson)` match instead of all collapsing into one empty-key lesson. This matters
+for distinct `site_specific` lessons and generic learned `best_practice` items.
+
+## Real-Flow Findings
+
+The first real memory-flow evaluation is documented in
+[`memory-real-flow-evaluation-2026-05-27.md`](memory-real-flow-evaluation-2026-05-27.md).
+It used the real `browser-agent` CLI, real Playwright sessions, and the Codex
+planner against local fixture pages.
+
+The evaluation confirmed the core loop works:
+
+- A real browser action failed: `playwright-cli select e6 High` against an ARIA
+  combobox button.
+- Post-run learning recorded an `error_recovery` lesson:
+  `When select fails ... try click instead.`
+- Later runs loaded the isolated memory store and recalled that lesson after the
+  same real `select` failure.
+- `memory_events.jsonl` showed `error_recall` with `matched=1`, and
+  `actions.jsonl` showed the subsequent click-based recovery route.
+
+It also exposed important gaps:
+
+- Post-run extraction learns from adjacent `error` -> `ok` action pairs. In the
+  real flow, `select -> click combobox` was only a partial recovery; the task was
+  complete only after clicking the visible `High` option and finishing.
+- Repeated recalls can reinforce a partial lesson. If promoted too early, a
+  high-use but underspecified lesson could enter Tier 1.
+- Domain recall still only surfaces existing `site_specific` lessons; post-run
+  learning currently creates `error_recovery` lessons, not site-specific guidance.
+- The store relies on stale pruning rather than a hard total-size cap.
+
+The first memory-to-action grounding fix was implemented on 2026-05-27:
+
+- The interpreter now exposes ARIA `option` nodes as actionable targets instead
+  of dropping them from the clickable element list.
+- The prompt builder now adds a targeted recovery note after `selectOption` /
+  `Element is not a <select>` failures when visible option/button refs are
+  available.
+- `runs/run_20260527T180316Z` replayed Workflow B successfully: the run recalled
+  the learned `select` failure lesson, clicked the combobox, clicked `option
+  "High"` at `e11`, and finished.
+- `tests/test_decision_loop.py` now includes a deterministic route-level
+  regression that exercises the decision loop with fixture snapshots and asserts
+  `select e6 High -> error`, `error_recall matched=1`, `click e6 -> ok`, `click
+  e11 -> ok`, and `finish -> completed`.
+
+The next memory-related work should focus on learning the full multi-step
+recovery sequence, not only the adjacent `select -> click combobox` pair.
+
 ## Seed Lessons
 
 Three lessons are seeded on first run:
@@ -381,7 +448,7 @@ Call the appropriate tool for the next action.
 | `browser_agent/prompt_builder.py` | Added `tier1_lessons` param to `build_system_instruction()`, `domain_context` param to `build_page_message()` |
 | `browser_agent/decision_loop.py` | Added `memory` param, Trigger A (error recall), Trigger B (domain recall), post-run learning |
 | `browser_agent/main.py` | Creates `MemoryStore`, wires it into planner and decision loop |
-| `tests/test_memory.py` | New — 19 tests covering all memory functionality |
+| `tests/test_memory.py` | Regression coverage for persistence, recall, dedupe, promotion, pruning, post-run learning, events, and URL parsing |
 
 ## Storage
 
@@ -444,23 +511,24 @@ After a run, `runs/run_20260312T143000Z/memory_events.jsonl` might contain:
 
 ```bash
 # All memory activity for the latest run
-cat runs/run_*/memory_events.jsonl | python -m json.tool
+tail -n 50 runs/run_*/memory_events.jsonl
 
 # Only error recalls (did Trigger A fire? what matched?)
-grep "error_recall" runs/run_*/memory_events.jsonl
+rg '"event": "error_recall"' runs/run_*/memory_events.jsonl
 
 # Only domain recalls (did Trigger B fire? what matched?)
-grep "domain_recall" runs/run_*/memory_events.jsonl
+rg '"event": "domain_recall"' runs/run_*/memory_events.jsonl
 
 # Check for promotions across all runs
-grep "lesson_promoted" runs/run_*/memory_events.jsonl
+rg '"event": "lesson_promoted"' runs/run_*/memory_events.jsonl
 
 # Count how often each event type fires
-cat runs/run_*/memory_events.jsonl | python -c "
+python -c "
 import sys, json, collections
 c = collections.Counter()
-for line in sys.stdin:
-    c[json.loads(line)['event']] += 1
+for path in sys.argv[1:]:
+    for line in open(path, encoding='utf-8'):
+        c[json.loads(line)['event']] += 1
 for k, v in c.most_common(): print(f'{k}: {v}')
-"
+" runs/run_*/memory_events.jsonl
 ```
