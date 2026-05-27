@@ -6,7 +6,7 @@ Tier 1 (proactive): Universal lessons loaded into the system prompt.
     - Seeded with known truths; learned lessons can be promoted.
 
 Tier 2 (reactive): Searched on demand via structured field matching.
-    - Triggered on command failure, new domain, or stuck detection.
+    - Triggered on command failure or new domain.
     - Injected into the per-step user message when relevant.
 
 Post-run learning: Scans the actions log for failure→recovery patterns
@@ -188,10 +188,7 @@ class MemoryStore:
     def record_lesson(self, lesson: Lesson) -> None:
         """Add a new lesson if no duplicate exists."""
         for existing in self.lessons:
-            if (
-                existing.failed_command == lesson.failed_command
-                and existing.error_pattern == lesson.error_pattern
-            ):
+            if _is_duplicate_lesson(existing, lesson):
                 self._emit({
                     "event": "lesson_deduplicated",
                     "lesson": existing.lesson,
@@ -289,6 +286,28 @@ class MemoryStore:
             if not any(ls.lesson == seed.lesson for ls in self.lessons):
                 self.lessons.append(seed)
         self.save()
+
+
+def _is_duplicate_lesson(existing: Lesson, lesson: Lesson) -> bool:
+    """Return whether two lessons represent the same stored learning."""
+    has_recovery_key = any(
+        (
+            existing.failed_command,
+            existing.error_pattern,
+            lesson.failed_command,
+            lesson.error_pattern,
+        )
+    )
+    if has_recovery_key:
+        return (
+            existing.failed_command == lesson.failed_command
+            and existing.error_pattern == lesson.error_pattern
+        )
+    return (
+        existing.category == lesson.category
+        and existing.domain == lesson.domain
+        and existing.lesson == lesson.lesson
+    )
 
 
 # ---------------------------------------------------------------------------

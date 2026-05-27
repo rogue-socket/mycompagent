@@ -83,7 +83,7 @@ class TestTier1:
             store.record_lesson(
                 Lesson(lesson=f"bp_{i}", category="best_practice")
             )
-        assert len(store.get_tier1(max_items=5)) <= 5
+        assert len(store.get_tier1(max_items=5)) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +92,15 @@ class TestTier1:
 
 
 class TestTier2:
-    def test_recall_on_error_matches_command(self, store: MemoryStore) -> None:
+    def test_recall_on_error_deduplicates_seed_match(self, store: MemoryStore) -> None:
+        seed = next(
+            lesson
+            for lesson in store.lessons
+            if lesson.failed_command == "fill"
+            and lesson.error_pattern == "too many arguments"
+            and lesson.source == "seed"
+        )
+        before_use_count = seed.use_count
         store.record_lesson(
             Lesson(
                 lesson="use type instead",
@@ -101,8 +109,10 @@ class TestTier2:
                 error_pattern="too many arguments",
             )
         )
+
         results = store.recall_on_error("fill", "too many arguments: expected 2")
-        assert any("type instead" in r.lesson for r in results)
+        assert any("If fill fails" in r.lesson for r in results)
+        assert seed.use_count == before_use_count + 1
 
     def test_recall_on_error_no_match(self, store: MemoryStore) -> None:
         results = store.recall_on_error("goto", "some random error xyz")
@@ -167,6 +177,26 @@ class TestRecording:
         store.record_lesson(lesson_a)
         store.record_lesson(lesson_b)  # duplicate by (failed_command, error_pattern)
         assert len(store.lessons) == before + 1
+
+    def test_distinct_keyless_lessons_are_not_deduplicated(
+        self, store: MemoryStore
+    ) -> None:
+        before = len(store.lessons)
+        store.record_lesson(
+            Lesson(
+                lesson="click the cookie banner first",
+                category="site_specific",
+                domain="amazon.com",
+            )
+        )
+        store.record_lesson(
+            Lesson(
+                lesson="use the search field in the header",
+                category="site_specific",
+                domain="google.com",
+            )
+        )
+        assert len(store.lessons) == before + 2
 
     def test_promotion(self, store: MemoryStore) -> None:
         lesson = Lesson(
@@ -269,8 +299,17 @@ class TestPostRunLearning:
             encoding="utf-8",
         )
         before = len(store.lessons)
+        seed = next(
+            lesson
+            for lesson in store.lessons
+            if lesson.failed_command == "fill"
+            and lesson.error_pattern == "too many arguments"
+            and lesson.source == "seed"
+        )
+        before_use_count = seed.use_count
         extract_lessons_from_run(actions_log, store)
-        assert len(store.lessons) > before
+        assert len(store.lessons) == before
+        assert seed.use_count == before_use_count + 1
 
     def test_ignores_consecutive_failures(
         self, store: MemoryStore, tmp_path: Path
