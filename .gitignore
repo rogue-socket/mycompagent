@@ -29,3 +29,7 @@ htmlcov/
 
 # Playwright CLI artifacts
 /.playwright-cli/
+
+# Codex session docs
+handoffs/
+backlog.md
