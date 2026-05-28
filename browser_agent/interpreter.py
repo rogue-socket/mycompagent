@@ -81,9 +81,9 @@ def _extract_clickables(
     is_article_page = _looks_like_article_page(url, title)
     for elem in elements:
         desc = elem.description.lower()
-        if _is_clickable_description(desc):
-            element_type = _classify_element_type(desc)
-            text = _extract_label(elem.description)
+        if _is_clickable_element(elem):
+            element_type = _classify_element_type(desc, elem)
+            text = _extract_card_label(elem) if element_type == "card" else _extract_label(elem.description)
             clickables.append(
                 ClickableElement(
                     element_id=elem.ref,
@@ -101,7 +101,16 @@ def _extract_clickables(
             )
     if is_article_page:
         clickables = _rank_article_clickables(clickables, url)
+    elif any(item.element_type == "card" for item in clickables):
+        clickables = _rank_card_clickables(clickables)
     return clickables[:max_items]
+
+
+def _is_clickable_element(elem: ElementRef) -> bool:
+    desc = elem.description.lower()
+    return _is_clickable_description(desc) or (
+        _is_cursor_pointer_generic(elem) and _has_meaningful_card_text(elem)
+    )
 
 
 def _is_clickable_description(desc: str) -> bool:
@@ -115,7 +124,9 @@ def _starts_with_role(desc: str, role: str) -> bool:
     return desc == role or desc.startswith(f"{role} ") or desc.startswith(f'{role}"')
 
 
-def _classify_element_type(desc: str) -> str:
+def _classify_element_type(desc: str, elem: ElementRef | None = None) -> str:
+    if elem is not None and _is_cursor_pointer_generic(elem):
+        return "card"
     if _starts_with_role(desc, "option"):
         return "option"
     if "link" in desc:
@@ -131,6 +142,24 @@ def _classify_element_type(desc: str) -> str:
     if "radio" in desc:
         return "radio"
     return "other"
+
+
+def _is_cursor_pointer_generic(elem: ElementRef) -> bool:
+    metadata = {item.lower() for item in getattr(elem, "metadata", ())}
+    return _starts_with_role(elem.description.lower(), "generic") and "cursor=pointer" in metadata
+
+
+def _has_meaningful_card_text(elem: ElementRef) -> bool:
+    text = f"{elem.description} {getattr(elem, 'child_text', '')}".strip()
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    return len(cleaned) >= 8 and bool(re.search(r"[A-Za-z0-9]", cleaned))
+
+
+def _extract_card_label(elem: ElementRef) -> str:
+    child_text = re.sub(r"\s+", " ", getattr(elem, "child_text", "")).strip()
+    if child_text:
+        return f'generic card "{child_text[:140]}"'
+    return _extract_label(elem.description)
 
 
 def _extract_label(description: str) -> str:
@@ -157,6 +186,47 @@ def _rank_article_clickables(
     )
 
 
+def _rank_card_clickables(clickables: list[ClickableElement]) -> list[ClickableElement]:
+    return [
+        item
+        for _, item in sorted(
+            enumerate(clickables),
+            key=lambda pair: (_card_clickable_priority(pair[1]), pair[0]),
+        )
+    ]
+
+
+def _card_clickable_priority(item: ClickableElement) -> int:
+    if item.element_type == "card" or item.area == "result_card":
+        return 0 if _is_rich_result_card_label(item.text) else 3
+    if item.element_type == "input":
+        return 1
+    if item.element_type in {"button", "option", "select", "checkbox", "radio"}:
+        return 2
+    if item.area in {"navigation", "account", "language"}:
+        return 5
+    return 4
+
+
+def _is_rich_result_card_label(text: str) -> bool:
+    lowered = text.lower()
+    if "generic card" not in lowered:
+        return False
+    return len(lowered) >= 45 or any(
+        marker in lowered
+        for marker in (
+            "bookable",
+            "featured",
+            "rating",
+            "start-rating",
+            " km",
+            " kms",
+            "inr ",
+            " | ",
+        )
+    )
+
+
 def _article_clickable_priority(item: ClickableElement, current_url: str) -> int:
     area_priority = {
         "article": 0,
@@ -179,6 +249,8 @@ def _classify_clickable_area(
     *,
     is_article_page: bool,
 ) -> str:
+    if element_type == "card":
+        return "result_card"
     if element_type != "link":
         return "action"
 
@@ -415,8 +487,8 @@ def _detect_page_type(
         return "search_results"
     if _looks_like_article_page(url, title):
         return "article"
-    if len(visible_text.splitlines()) > 30:
-        return "article"
+    if _looks_like_listing_page(url, title, visible_text, clickables):
+        return "listing_results"
     if "password" in text_lower or (
         "sign in" in text_lower and any(elem.element_type == "input" for elem in clickables)
     ):
@@ -426,6 +498,40 @@ def _detect_page_type(
     if any(elem.element_type == "input" for elem in clickables):
         return "form"
     return "unknown"
+
+
+def _looks_like_listing_page(
+    url: str,
+    title: str,
+    visible_text: str,
+    clickables: list[ClickableElement],
+) -> bool:
+    text_lower = visible_text.lower()
+    chrome_lower = f"{url} {title}".lower()
+    result_card_count = sum(
+        1
+        for elem in clickables
+        if elem.element_type == "card" or elem.area == "result_card"
+    )
+    if result_card_count >= 2:
+        return True
+    listing_markers = (
+        "bookable",
+        "filter",
+        "filters",
+        "results",
+        "search results",
+        "showing",
+        "sort by",
+        "venues",
+    )
+    if result_card_count and any(marker in text_lower for marker in listing_markers):
+        return True
+    if any(marker in chrome_lower for marker in ("venues", "listing", "results")) and any(
+        marker in text_lower for marker in listing_markers
+    ):
+        return True
+    return text_lower.count("bookable") >= 2
 
 
 def _summarize_page(
@@ -438,6 +544,12 @@ def _summarize_page(
         top_lines = lines[:6]
         top_links = [c.text for c in clickables if c.element_type == "link"]
         return "Search results page. Top visible lines: " + "; ".join(top_lines[:3]) + "."
+    if page_type == "listing_results":
+        card_labels = [
+            c.text for c in clickables if c.element_type == "card" or c.area == "result_card"
+        ]
+        if card_labels:
+            return "Listing/results page. Visible result cards: " + "; ".join(card_labels[:3]) + "."
     if page_type == "article":
         article_lines = _article_summary_lines(lines)
         if article_lines:

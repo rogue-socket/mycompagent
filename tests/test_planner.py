@@ -5,6 +5,7 @@ from browser_agent.planner import (
     CodexPlanner,
     PlannerConfigurationError,
     PlannerError,
+    _is_quota_or_rate_limit_error,
     _is_non_retryable_planner_error,
 )
 
@@ -67,6 +68,7 @@ class CodexPlannerTests(unittest.TestCase):
         self.assertEqual(result.tool_args["reason"], "saw Example Domain")
         self.assertEqual(result.reasoning_text, "page has answer")
         self.assertIn("Return exactly one JSON object", model.prompts[0])
+        self.assertIn("Do not choose snapshot unless the user explicitly asked", model.prompts[0])
 
     def test_retries_invalid_json(self) -> None:
         model = _FakeModel(
@@ -135,6 +137,29 @@ class CodexPlannerTests(unittest.TestCase):
 
         self.assertEqual(len(model.prompts), 1)
 
+    def test_codex_usage_limit_does_not_retry(self) -> None:
+        model = _FakeModel(
+            _FakeResult(
+                "",
+                ok=False,
+                stderr=(
+                    "You've hit your usage limit. Visit "
+                    "https://chatgpt.com/codex/settings/usage to purchase more "
+                    "credits or try again at 4:18 PM."
+                ),
+            )
+        )
+        planner = CodexPlanner(
+            model_name=None,
+            system_instruction="system",
+            model=model,
+        )
+
+        with self.assertRaises(PlannerError):
+            planner.plan("Current page", max_retries=3)
+
+        self.assertEqual(len(model.prompts), 1)
+
 
 class PlannerErrorClassificationTests(unittest.TestCase):
     def test_non_retryable_api_key_error(self) -> None:
@@ -146,6 +171,9 @@ class PlannerErrorClassificationTests(unittest.TestCase):
 
     def test_rate_limit_is_retryable(self) -> None:
         self.assertFalse(_is_non_retryable_planner_error("429 quota exceeded"))
+
+    def test_usage_limit_is_quota_error(self) -> None:
+        self.assertTrue(_is_quota_or_rate_limit_error("You've hit your usage limit. Try again at 4:18 PM."))
 
 
 if __name__ == "__main__":

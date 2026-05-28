@@ -31,6 +31,18 @@ class GuardrailTests(unittest.TestCase):
         elements = [ElementRef(ref="e2", description="Buy now")]
         self.assertTrue(is_risky_action(action, elements))
 
+    def test_risky_click_keywords_in_card_child_text(self) -> None:
+        action = _make_action("click", ["e3"])
+        elements = [
+            ElementRef(
+                ref="e3",
+                description="generic",
+                metadata=("cursor=pointer",),
+                child_text="Premium court | Checkout",
+            )
+        ]
+        self.assertTrue(is_risky_action(action, elements))
+
     def test_safe_click(self) -> None:
         action = _make_action("click", ["e1"])
         elements = [ElementRef(ref="e1", description="Search button")]

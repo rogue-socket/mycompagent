@@ -6,15 +6,18 @@ from browser_agent.snapshot_parser import SnapshotState, ElementRef
 
 
 class DummyExecutor(PlaywrightExecutor):
-    def __init__(self) -> None:
+    def __init__(self, visible_text: str | None = None) -> None:
         super().__init__(session=None, use_npx=False)
+        self.visible_text = visible_text or "Visible text line 1\nVisible text line 2"
 
     def run(self, command: str, timeout: float = 45.0):
+        visible_text = self.visible_text
+
         class Result:
             def __init__(self) -> None:
                 self.command = command
                 self.returncode = 0
-                self.stdout = "Visible text line 1\nVisible text line 2"
+                self.stdout = visible_text
                 self.stderr = ""
         return Result()
 
@@ -167,6 +170,80 @@ class InterpreterTests(unittest.TestCase):
         state = interpret_page(snapshot, DummyExecutor(), max_clickables=5)
 
         self.assertEqual(state.page_type, "article")
+
+    def test_cursor_pointer_generic_cards_are_clickable_listing_results(self) -> None:
+        visible_text = "\n".join(
+            [
+                "Padel venues in Bengaluru",
+                "Filters",
+                "Sort by",
+                "Padel Arena",
+                "HSR Layout",
+                "Bookable",
+                "Smash Courts",
+                "Indiranagar",
+                "Bookable",
+                *[f"Venue detail line {index}" for index in range(35)],
+            ]
+        )
+        snapshot = SnapshotState(
+            url="https://example.com/venues/bengaluru",
+            title="Padel Venues",
+            elements=[
+                ElementRef(ref="e1", description='link "Privacy"', url="/privacy"),
+                ElementRef(
+                    ref="e50",
+                    description="generic",
+                    metadata=("cursor=pointer",),
+                    child_text="Padel Arena | HSR Layout | 4.6 | Bookable",
+                ),
+                ElementRef(
+                    ref="e51",
+                    description="generic",
+                    metadata=("cursor=pointer",),
+                    child_text="Smash Courts | Indiranagar | Bookable",
+                ),
+            ],
+            raw_text="",
+        )
+
+        state = interpret_page(snapshot, DummyExecutor(visible_text), max_clickables=10)
+
+        self.assertEqual(state.page_type, "listing_results")
+        self.assertEqual(state.clickable_elements[0].element_id, "e50")
+        self.assertEqual(state.clickable_elements[0].element_type, "card")
+        self.assertEqual(state.clickable_elements[0].area, "result_card")
+        self.assertIn("Padel Arena", state.clickable_elements[0].text)
+        self.assertIn("HSR Layout", state.clickable_elements[0].text)
+
+    def test_rich_result_cards_are_prioritized_over_thin_generic_refs(self) -> None:
+        snapshot = SnapshotState(
+            url="https://example.com/venues/bengaluru",
+            title="Venues",
+            elements=[
+                ElementRef(
+                    ref="e10",
+                    description="generic : PLAY",
+                    metadata=("cursor=pointer",),
+                ),
+                ElementRef(
+                    ref="e20",
+                    description="generic",
+                    metadata=("cursor=pointer",),
+                    child_text="Court One Sports | Bookable | 5.00 | Central District | Pickleball",
+                ),
+            ],
+            raw_text="",
+        )
+
+        state = interpret_page(
+            snapshot,
+            DummyExecutor("Venues\nBookable\nCourt One Sports\nPickleball"),
+            max_clickables=10,
+        )
+
+        self.assertEqual(state.clickable_elements[0].element_id, "e20")
+        self.assertEqual(state.clickable_elements[1].element_id, "e10")
 
 
 if __name__ == "__main__":

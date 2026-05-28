@@ -133,6 +133,240 @@ class AriaComboboxPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class OverlayBlockingExecutor:
+    def __init__(self) -> None:
+        self.overlay_open = True
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command == "playwright-cli click e1":
+            return CommandResult(
+                command,
+                1,
+                "",
+                (
+                    "TimeoutError: locator.click: Timeout 5000ms exceeded.\n"
+                    "<div id=\"headlessui-dialog-overlay\" class=\"modal overlay\"></div> "
+                    "intercepts pointer events"
+                ),
+            )
+        if command == "playwright-cli press Escape":
+            self.overlay_open = False
+            return CommandResult(command, 0, "Pressed Escape", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult("playwright-cli snapshot", 0, self._snapshot_text(), "")
+
+    def _snapshot_text(self) -> str:
+        lines = ['button "Book Now" [ref=e1]']
+        if self.overlay_open:
+            lines.extend(
+                [
+                    'dialog "Price chart" [ref=e2]:',
+                    '  - img "cross" [ref=e3] [cursor=pointer]',
+                ]
+            )
+        else:
+            lines.append('text "Overlay dismissed; booking controls are visible."')
+        return _workflow_snapshot(lines)
+
+    def _visible_text(self) -> str:
+        if self.overlay_open:
+            return "Venue page\nBook Now\nPrice chart"
+        return "Venue page\nBook Now\nOverlay dismissed; booking controls are visible."
+
+
+class OverlayRecoveryPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            self.testcase.assertIn('e1: [action] button - button "Book Now"', message)
+            return _tool("click", {"ref": "e1"}, "Click the visible booking button.")
+        if step == 2:
+            self.testcase.assertIn("Escape was pressed to dismiss it", message)
+            self.testcase.assertIn("Overlay dismissed; booking controls are visible.", message)
+            return _tool("finish", {"reason": "Overlay recovery completed."}, "Recovered from the overlay.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class PriceComparisonExecutor:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _workflow_snapshot(
+                [
+                    'heading "Shopping results" [level=1] [ref=e1]',
+                    'generic [ref=e2]: Alpha Laptop',
+                    'generic [ref=e3]: $499',
+                    'generic [ref=e4]: Beta Laptop',
+                    'generic [ref=e5]: $699',
+                ]
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        return "Shopping results\nAlpha Laptop\n$499\nBeta Laptop\n$699"
+
+
+class PriceComparisonPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            self.testcase.assertIn("Best price evidence so far:", message)
+            return _tool(
+                "finish",
+                {"reason": "Cheapest option is Beta Laptop for $699."},
+                "Incorrectly finish with the current preferred item.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Finish rejected", message)
+            return _tool(
+                "finish",
+                {"reason": "Cheapest checked option is Alpha Laptop for $499."},
+                "Use the cheaper evidence from the ledger.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class MultiSiteSearchExecutor:
+    def __init__(self) -> None:
+        self.url = "https://www.google.com/search?q=compare+websites"
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command.startswith("playwright-cli goto "):
+            destination = command.split(" ", 2)[2]
+            self.url = destination.strip()
+            return CommandResult(command, 0, f"Opened {self.url}", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n\"Visible content from {self.url}\"",
+                "",
+            )
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        if "google.com/search" in self.url:
+            return CommandResult(
+                "playwright-cli snapshot",
+                0,
+                (
+                    "Page URL: https://www.google.com/search?q=compare+websites\n"
+                    "Page Title: Compare websites — Google Search\n"
+                    "Snapshot\n"
+                    '  - heading "Best options from many websites"\n'
+                    '  - text "Result snippets for example sites."\n'
+                ),
+                "",
+            )
+        if "site-a.example" in self.url:
+            return CommandResult(
+                "playwright-cli snapshot",
+                0,
+                (
+                    "Page URL: https://site-a.example/results\n"
+                    "Page Title: Site A Listings\n"
+                    "Snapshot\n"
+                    '  - heading "Site A offer"\n'
+                ),
+                "",
+            )
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            (
+                "Page URL: https://site-b.example/listings\n"
+                "Page Title: Site B Listings\n"
+                "Snapshot\n"
+                '  - heading "Site B offer"\n'
+            ),
+            "",
+        )
+
+
+class MultiSiteSearchPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            self.testcase.assertIn("Task requires inspecting multiple websites", message)
+            return _tool(
+                "finish",
+                {"reason": "The top snippet says site A is best."},
+                "Attempting to finish from search snippets.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Finish rejected", message)
+            return _tool(
+                "goto",
+                {"url": "site-a.example/results"},
+                "Visit source website A.",
+            )
+        if step == 3:
+            return _tool(
+                "goto",
+                {"url": "site-b.example/listings"},
+                "Visit source website B.",
+            )
+        if step == 4:
+            return _tool(
+                "finish",
+                {"output": "Site A and Site B were reviewed; Site B offer is cheapest."},
+                "Finish after reading source pages.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -167,6 +401,8 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                 attempts=2,
                 rate_limited=False,
                 reasoning_text="Click the relevant link.",
+                raw_response='{"tool_name": "click"}',
+                prompt_text="full planner prompt",
             )
 
             payload = loop._planner_log_payload("current page prompt", tool_result=result)
@@ -178,6 +414,8 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(payload["debug_artifacts"]["debug_log"], str(paths.debug_log))
             self.assertEqual(payload["debug_artifacts"]["traces_dir"], str(paths.traces))
             self.assertEqual(payload["debug_artifacts"]["video"], str(paths.root / "session.webm"))
+            self.assertEqual(payload["planner_prompt"], "full planner prompt")
+            self.assertEqual(payload["raw_model_response"], '{"tool_name": "click"}')
 
     def test_planner_error_payload_marks_non_retryable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -275,6 +513,148 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(payload["tool_name"], "click")
             self.assertEqual(payload["tool_args"], {"ref": "e1"})
             self.assertEqual(payload["reasoning"], "The target link is visible.")
+            self.assertEqual(payload["planner_latency_seconds"], 0.2)
+            self.assertEqual(payload["planner_attempts"], 1)
+
+    def test_debug_log_records_planner_prompt_response_and_selected_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = RunPaths(Path(tmp))
+            loop = DecisionLoop(
+                task="Test task",
+                mode="auto",
+                planner=object(),
+                config={},
+                paths=paths,
+                executor=object(),
+                open_url=None,
+                open_args=[],
+                debug=True,
+            )
+            loop.step = 5
+            result = ToolCallResult(
+                tool_name="click",
+                tool_args={"ref": "e50"},
+                latency_seconds=0.3,
+                attempts=1,
+                rate_limited=False,
+                reasoning_text="Click the visible result card.",
+                raw_response='{"reasoning": "Click the visible result card.", "tool_name": "click"}',
+                prompt_text="full prompt with card refs",
+            )
+
+            loop._log_planner_debug_io(
+                "page message",
+                tool_result=result,
+                planner_state={
+                    "selected_clickables": [{"ref": "e50", "type": "card"}],
+                    "prioritized_card_refs": ["e50"],
+                    "evidence_snippets": ["Padel Arena HSR Layout"],
+                    "cursor_pointer_refs_excluded": [{"ref": "e99"}],
+                },
+            )
+
+            payload = _read_jsonl(paths.debug_log)[0]
+            self.assertEqual(payload["event"], "planner-io")
+            self.assertEqual(payload["planner_prompt"], "full prompt with card refs")
+            self.assertIn("Click the visible result card", payload["raw_model_response"])
+            self.assertEqual(payload["selected_clickables"][0]["ref"], "e50")
+            self.assertEqual(payload["prioritized_card_refs"], ["e50"])
+            self.assertEqual(payload["cursor_pointer_refs_excluded"][0]["ref"], "e99")
+
+    def test_click_blocked_by_overlay_presses_escape_before_next_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = OverlayRecoveryPlanner(self)
+            executor = OverlayBlockingExecutor()
+            loop = DecisionLoop(
+                task="Recover when a modal blocks a click.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/modal.html",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(loop.errors, 0)
+            self.assertEqual(
+                [command for command in executor.commands if not command.startswith("playwright-cli eval")],
+                [
+                    "playwright-cli open http://127.0.0.1:8766/modal.html",
+                    "playwright-cli click e1",
+                    "playwright-cli press Escape",
+                ],
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "error")
+            self.assertEqual(actions[0]["recovery"]["command"], "playwright-cli press Escape")
+            self.assertEqual(actions[1]["approval_status"], "auto_recovery")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_finish_validation_rejects_higher_price_than_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = PriceComparisonPlanner(self)
+            executor = PriceComparisonExecutor()
+            loop = DecisionLoop(
+                task="Find the cheapest laptop in these shopping results.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/shop.html",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(result.finish_output, "Cheapest checked option is Alpha Laptop for $499.")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "rejected")
+            self.assertEqual(actions[0]["command"], "finish")
+            self.assertIn("higher price", actions[0]["validation_error"])
+            self.assertEqual(actions[1]["execution_result"], "completed")
+
+    def test_multi_site_task_finishing_from_google_snippets_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = MultiSiteSearchPlanner(self)
+            executor = MultiSiteSearchExecutor()
+            loop = DecisionLoop(
+                task="Compare service plans across different websites.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 6, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://www.google.com/search?q=compare+websites",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "rejected")
+            self.assertEqual(actions[0]["command"], "finish")
+            self.assertIn("search pages", actions[0]["validation_error"])
+            self.assertEqual(actions[-1]["execution_result"], "completed")
+            self.assertEqual(actions[-1]["command"], "finish")
 
 
 class DecisionLoopMemoryRegressionTests(unittest.TestCase):

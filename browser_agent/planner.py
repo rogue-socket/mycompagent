@@ -33,6 +33,8 @@ class ToolCallResult:
     attempts: int
     rate_limited: bool
     reasoning_text: str = ""
+    raw_response: str = ""
+    prompt_text: str = ""
 
 
 _CODEX_TOOL_GUIDE = """Return exactly one JSON object with this shape:
@@ -60,6 +62,7 @@ Allowed tool names and arguments:
 Rules:
 - Return JSON only. No Markdown fences, prose, or tool call syntax.
 - Use only element refs from the current page state.
+- Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
 - Choose one action that advances the browser task."""
 
 
@@ -111,6 +114,7 @@ class ChatPlanner:
             try:
                 response = chat.send_message(message)
                 latency = time.monotonic() - start
+                raw_response = _serialize_response(response)
 
                 # Extract function call from response.
                 tool_call = self._extract_tool_call(response)
@@ -131,6 +135,8 @@ class ChatPlanner:
                     attempts=attempts,
                     rate_limited=rate_limited,
                     reasoning_text=reasoning,
+                    raw_response=raw_response,
+                    prompt_text=self._debug_prompt(message),
                 )
             except PlannerError:
                 raise
@@ -160,6 +166,16 @@ class ChatPlanner:
     def reset(self) -> None:
         """Reset the chat session (e.g. between runs)."""
         self._chat = None
+
+    def _debug_prompt(self, message: str) -> str:
+        return "\n\n".join(
+            [
+                "System instruction:",
+                self.system_instruction,
+                "Current page state:",
+                message,
+            ]
+        )
 
     @staticmethod
     def _extract_tool_call(response: Any) -> Any | None:
@@ -194,6 +210,7 @@ class CodexPlanner:
     cwd: str | Path | None = None
     profile: str | None = None
     sandbox: str | None = "read-only"
+    timeout_seconds: float = 30.0
     model: Any | None = None
     _history: list[str] = field(default_factory=list, init=False, repr=False)
 
@@ -217,6 +234,8 @@ class CodexPlanner:
                 model=self.model_name or None,
                 profile=self.profile or None,
                 sandbox=self.sandbox or None,
+                prompt_via_stdin=True,
+                timeout_seconds=self.timeout_seconds,
                 ephemeral=True,
                 skip_git_repo_check=True,
             )
@@ -239,9 +258,9 @@ class CodexPlanner:
                 lowered = last_error.lower()
                 if _is_non_retryable_planner_error(lowered):
                     raise PlannerConfigurationError(last_error)
-                rate_limited = rate_limited or any(
-                    token in lowered for token in ("429", "quota", "rate")
-                )
+                rate_limited = rate_limited or _is_quota_or_rate_limit_error(lowered)
+                if _is_usage_limit_error(lowered):
+                    break
                 if attempts >= max_retries:
                     break
                 time.sleep(min(2 ** (attempts - 1), 8))
@@ -285,6 +304,8 @@ class CodexPlanner:
                 attempts=attempts,
                 rate_limited=rate_limited,
                 reasoning_text=reasoning,
+                raw_response=result.text or "",
+                prompt_text=prompt,
             )
 
         raise PlannerError(f"Codex planner failed after {attempts} attempts: {last_error}")
@@ -345,6 +366,21 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     raise json.JSONDecodeError("no JSON object found", stripped, 0)
 
 
+def _serialize_response(response: Any) -> str:
+    for method_name in ("to_json", "model_dump_json", "json"):
+        method = getattr(response, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            return str(method())
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        return json.dumps(response, default=str, ensure_ascii=True)
+    except TypeError:
+        return str(response)
+
+
 def _is_non_retryable_planner_error(message: str) -> bool:
     """Return true for auth/config failures that retries cannot fix."""
     lowered = message.lower()
@@ -360,3 +396,16 @@ def _is_non_retryable_planner_error(message: str) -> bool:
         "403",
     )
     return any(marker in lowered for marker in non_retryable_markers)
+
+
+def _is_quota_or_rate_limit_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        token in lowered
+        for token in ("429", "quota", "rate", "usage limit", "try again at")
+    )
+
+
+def _is_usage_limit_error(message: str) -> bool:
+    lowered = message.lower()
+    return "usage limit" in lowered or "try again at" in lowered

@@ -25,8 +25,9 @@ from browser_agent.logger import append_jsonl, write_run_meta, write_snapshot
 from browser_agent.memory import MemoryStore, _domain_from_url, extract_lessons_from_run
 from browser_agent.playwright_executor import PlaywrightExecutionError, PlaywrightExecutor
 from browser_agent.planner import ChatPlanner, PlannerConfigurationError, PlannerError
-from browser_agent.prompt_builder import build_page_message
+from browser_agent.prompt_builder import build_page_message, planner_state_debug_payload
 from browser_agent.snapshot_parser import load_snapshot_text, parse_snapshot
+from browser_agent.task_state import EvidenceLedger, build_task_contract
 
 
 @dataclass(slots=True)
@@ -79,6 +80,8 @@ class DecisionLoop:
         self._debug_started_at = 0.0
         self.clicked_route: list[dict[str, str]] = []
         self.finish_output: str | None = None
+        self.task_contract = build_task_contract(task)
+        self.evidence_ledger = EvidenceLedger()
 
     def run(self) -> RunResult:
         start = time.monotonic()
@@ -138,6 +141,14 @@ class DecisionLoop:
                     max_visible_chars=int(self.config.get("max_visible_chars", 2000)),
                 )
                 interpreter_dict = interpreter_to_dict(interpreter_state)
+                self.evidence_ledger.add_page(
+                    step=self.step,
+                    url=interpreter_state.url,
+                    title=interpreter_state.title,
+                    text=snapshot_state.raw_text,
+                    contract=self.task_contract,
+                )
+                task_context = self.evidence_ledger.summary(self.task_contract)
 
                 # ---- Memory: domain recall (Trigger B) ----
                 if self.memory:
@@ -218,9 +229,19 @@ class DecisionLoop:
                     domain_context=self._domain_context,
                     task=self.task,
                     evidence_text=snapshot_state.raw_text,
+                    task_context=task_context,
                 )
                 self.last_step_error = None
                 self._log(f"Step {self.step}: message length={len(message)} chars")
+                planner_debug_payload = (
+                    self._planner_state_debug_payload(
+                        interpreter_state,
+                        snapshot_state,
+                        max_elements,
+                    )
+                    if self.debug
+                    else None
+                )
 
                 try:
                     tool_result = self.planner.plan(
@@ -240,6 +261,12 @@ class DecisionLoop:
                             self.paths.reasoning_log,
                             self._reasoning_log_payload(tool_result),
                         )
+                    if self.debug:
+                        self._log_planner_debug_io(
+                            message,
+                            tool_result=tool_result,
+                            planner_state=planner_debug_payload,
+                        )
                     self._log(
                         f"Step {self.step}: tool_call={tool_result.tool_name}"
                         f"({tool_result.tool_args})"
@@ -256,6 +283,12 @@ class DecisionLoop:
                             non_retryable=True,
                         ),
                     )
+                    if self.debug:
+                        self._log_planner_debug_io(
+                            message,
+                            error=str(exc),
+                            planner_state=planner_debug_payload,
+                        )
                     break
                 except PlannerError as exc:
                     self.consecutive_planner_failures += 1
@@ -265,11 +298,17 @@ class DecisionLoop:
                         self.paths.llm_log,
                         self._planner_log_payload(message, error=str(exc)),
                     )
+                    if self.debug:
+                        self._log_planner_debug_io(
+                            message,
+                            error=str(exc),
+                            planner_state=planner_debug_payload,
+                        )
+                    if _planner_error_is_quota(str(exc)):
+                        self.stop_reason = "quota_exceeded"
+                        break
                     if self.errors >= int(self.config.get("max_errors", 5)):
                         self.stop_reason = "max_errors"
-                        break
-                    if self.consecutive_planner_failures >= 3 and "429" in str(exc):
-                        self.stop_reason = "quota_exceeded"
                         break
                     time.sleep(1.0)
                     continue
@@ -281,8 +320,38 @@ class DecisionLoop:
 
                 # ---- Handle finish tool ----
                 if tool_result.tool_name == "finish":
-                    self.stop_reason = "completed"
                     reason = tool_result.tool_args.get("reason", "")
+                    finish_text = tool_result.tool_args.get("output") or reason
+                    validation = self.evidence_ledger.validate_finish(
+                        finish_text,
+                        self.task_contract,
+                        current_url=snapshot_state.url,
+                    )
+                    if not validation.accepted:
+                        self.last_step_error = validation.message
+                        self._log(f"Step {self.step}: finish rejected — {validation.message}")
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "finish",
+                                "approval_status": "n/a",
+                                "execution_result": "rejected",
+                                "reason": reason,
+                                "validation_error": validation.message,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("finish rejected: " + validation.message)
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": validation.message},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
+                    self.stop_reason = "completed"
                     self.finish_output = tool_result.tool_args.get("output") or reason
                     self._log(f"Step {self.step}: task completed — {reason}")
                     append_jsonl(
@@ -294,6 +363,7 @@ class DecisionLoop:
                             "execution_result": "completed",
                             "reason": reason,
                             "grounded_route": self.clicked_route,
+                            "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
                     break
@@ -318,6 +388,7 @@ class DecisionLoop:
                             "approval_status": "n/a",
                             "execution_result": "parse_error",
                             "error": str(exc),
+                            "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
                     if self.errors >= int(self.config.get("max_errors", 5)):
@@ -347,6 +418,7 @@ class DecisionLoop:
                             "reason": "same_page_anchor_already_current",
                             "href": redundant_anchor.url,
                             "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
                     self.action_history.append(parsed_action.action)
@@ -371,6 +443,7 @@ class DecisionLoop:
                             "approval_status": "n/a",
                             "execution_result": "skipped",
                             "reason": "snapshot_already_available",
+                            "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
                     self.action_history.append(parsed_action.action)
@@ -397,6 +470,7 @@ class DecisionLoop:
                             "command": parsed_action.action,
                             "approval_status": "rejected",
                             "execution_result": "skipped",
+                            "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
                     self.action_history.append(parsed_action.action)
@@ -411,6 +485,25 @@ class DecisionLoop:
                 exec_status = "ok" if exec_result.returncode == 0 else "error"
                 self._log(self._format_command_result(parsed_action.action, exec_result))
                 self.last_action_ok = exec_status == "ok"
+                recovery_result = None
+                recovery_status = ""
+                if exec_status != "ok" and self._click_blocked_by_overlay(
+                    parsed_action, exec_result
+                ):
+                    recovery_command = "playwright-cli press Escape"
+                    self._log(
+                        f"Step {self.step}: click blocked by overlay; pressing Escape"
+                    )
+                    recovery_result = self.executor.run(recovery_command)
+                    recovery_status = (
+                        "ok" if recovery_result.returncode == 0 else "error"
+                    )
+                    self._log(
+                        self._format_command_result(
+                            "auto-recovery press Escape", recovery_result
+                        )
+                    )
+                    self.last_action_ok = recovery_status == "ok"
 
                 action_payload: dict[str, Any] = {
                     "step": self.step,
@@ -419,12 +512,20 @@ class DecisionLoop:
                     "execution_result": exec_status,
                     "stdout": exec_result.stdout,
                     "stderr": exec_result.stderr,
+                    "planner_latency_seconds": tool_result.latency_seconds,
                 }
                 if target_element:
                     route_entry = self._click_route_entry(target_element)
                     action_payload["target"] = route_entry
                     if exec_status == "ok":
                         self.clicked_route.append(route_entry)
+                if recovery_result is not None:
+                    action_payload["recovery"] = {
+                        "command": "playwright-cli press Escape",
+                        "execution_result": recovery_status,
+                        "stdout": recovery_result.stdout,
+                        "stderr": recovery_result.stderr,
+                    }
 
                 append_jsonl(
                     self.paths.actions_log,
@@ -432,6 +533,21 @@ class DecisionLoop:
                 )
 
                 self.action_history.append(parsed_action.action)
+                if recovery_result is not None:
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": "playwright-cli press Escape",
+                            "approval_status": "auto_recovery",
+                            "execution_result": recovery_status,
+                            "trigger": parsed_action.action,
+                            "stdout": recovery_result.stdout,
+                            "stderr": recovery_result.stderr,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append("playwright-cli press Escape")
 
                 # Send execution result back to chat so the LLM knows what happened.
                 result_payload = {"status": exec_status}
@@ -440,6 +556,13 @@ class DecisionLoop:
                 elif exec_status != "ok":
                     result_payload["error"] = (exec_result.stderr or "command failed")[:500]
                     self.last_step_error = result_payload["error"]
+                    if recovery_status == "ok":
+                        result_payload["recovery"] = "pressed Escape to dismiss blocking overlay"
+                        self.last_step_error = (
+                            "The click was blocked by a modal or overlay, so Escape was "
+                            "pressed to dismiss it. Use the updated page state instead of "
+                            "repeating the blocked click."
+                        )
 
                 try:
                     self.planner.send_tool_result(
@@ -451,6 +574,9 @@ class DecisionLoop:
                 if parsed_action.command in {"close", "close-all", "kill-all"}:
                     self.stop_reason = "closed"
                     break
+
+                if recovery_status == "ok":
+                    continue
 
                 if exec_status != "ok":
                     self.errors += 1
@@ -572,6 +698,69 @@ class DecisionLoop:
             f"stdout_len={len(result.stdout or '')} stderr_len={len(result.stderr or '')}"
         )
 
+    def _planner_state_debug_payload(
+        self,
+        interpreter_state: Any,
+        snapshot_state: Any,
+        max_elements: int,
+    ) -> dict[str, Any]:
+        payload = planner_state_debug_payload(
+            interpreter_state,
+            max_elements=max_elements,
+            task=self.task,
+            evidence_text=snapshot_state.raw_text,
+        )
+        selected_refs = {
+            item["ref"] for item in payload.get("selected_clickables", []) if item.get("ref")
+        }
+        payload["cursor_pointer_refs_excluded"] = [
+            {
+                "ref": elem.ref,
+                "description": elem.description,
+                "metadata": list(getattr(elem, "metadata", ())),
+                "child_text": getattr(elem, "child_text", "")[:300],
+            }
+            for elem in snapshot_state.elements
+            if "cursor=pointer" in {item.lower() for item in getattr(elem, "metadata", ())}
+            and elem.ref not in selected_refs
+        ]
+        return payload
+
+    def _log_planner_debug_io(
+        self,
+        message: str,
+        *,
+        tool_result: Any | None = None,
+        error: str | None = None,
+        planner_state: dict[str, Any] | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "event": "planner-io",
+            "step": self.step,
+            "planner_prompt": (
+                getattr(tool_result, "prompt_text", "") if tool_result is not None else ""
+            )
+            or message,
+            "raw_model_response": (
+                getattr(tool_result, "raw_response", "") if tool_result is not None else ""
+            ),
+        }
+        if error:
+            payload["error"] = error
+        if tool_result is not None:
+            payload.update(
+                {
+                    "tool_name": tool_result.tool_name,
+                    "tool_args": tool_result.tool_args,
+                    "planner_latency_seconds": tool_result.latency_seconds,
+                    "planner_attempts": tool_result.attempts,
+                    "planner_rate_limited": tool_result.rate_limited,
+                }
+            )
+        if planner_state:
+            payload.update(planner_state)
+        append_jsonl(self.paths.debug_log, payload)
+
     def _planner_log_payload(
         self,
         message: str,
@@ -596,10 +785,15 @@ class DecisionLoop:
                     "planner_rate_limited": tool_result.rate_limited,
                 }
             )
+            if self.debug:
+                payload["planner_prompt"] = tool_result.prompt_text or message
+                payload["raw_model_response"] = tool_result.raw_response
         else:
             payload.update({"error": error or "", "tool_name": "", "tool_args": {}})
             if non_retryable:
                 payload["non_retryable"] = True
+            if self.debug:
+                payload["planner_prompt"] = message
         return payload
 
     def _debug_artifact_paths(self) -> dict[str, Any]:
@@ -624,6 +818,8 @@ class DecisionLoop:
             "tool_name": tool_result.tool_name,
             "tool_args": tool_result.tool_args,
             "reasoning": tool_result.reasoning_text,
+            "planner_latency_seconds": tool_result.latency_seconds,
+            "planner_attempts": tool_result.attempts,
         }
 
     @staticmethod
@@ -635,6 +831,15 @@ class DecisionLoop:
             if elem.ref == target_ref:
                 return elem
         return None
+
+    @staticmethod
+    def _click_blocked_by_overlay(action: Any, result: Any) -> bool:
+        if action.command not in {"click", "dblclick", "check", "uncheck"}:
+            return False
+        stderr = (getattr(result, "stderr", "") or "").lower()
+        if "intercepts pointer events" not in stderr:
+            return False
+        return any(token in stderr for token in ("overlay", "dialog", "modal"))
 
     @staticmethod
     def _click_route_entry(element: Any) -> dict[str, str]:
@@ -685,3 +890,11 @@ def _label_from_description(description: str) -> str:
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _planner_error_is_quota(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        token in lowered
+        for token in ("429", "quota", "rate limit", "usage limit", "try again at")
+    )

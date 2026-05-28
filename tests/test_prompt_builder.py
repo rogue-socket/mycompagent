@@ -1,10 +1,17 @@
 import unittest
 
 from browser_agent.interpreter import ClickableElement, InterpreterState
-from browser_agent.prompt_builder import build_page_message
+from browser_agent.prompt_builder import build_page_message, build_system_instruction
 
 
 class PromptBuilderTests(unittest.TestCase):
+    def test_system_prompt_does_not_recommend_snapshot_for_recovery(self) -> None:
+        message = build_system_instruction("Find a venue detail page.")
+
+        self.assertIn("every step already includes a fresh page state", message)
+        self.assertIn("Do NOT call 'snapshot' for recovery", message)
+        self.assertNotIn("If you are stuck, try 'snapshot'", message)
+
     def test_task_relevant_links_are_prioritized_in_message(self) -> None:
         elements = [
             ClickableElement(f"e{i}", "link", f'link "Unrelated {i}"', f"/wiki/U{i}", "article")
@@ -167,6 +174,35 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("visible option/button refs", message)
         self.assertIn('e11: [action] option - option "High"', message)
         self.assertIn("- e11: High (option)", message)
+
+    def test_listing_prompt_places_result_cards_before_footer_links(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/venues",
+            title="Padel Venues",
+            page_type="listing_results",
+            clickable_elements=[
+                ClickableElement("e1", "link", 'link "Privacy"', "/privacy", "navigation"),
+                ClickableElement(
+                    "e50",
+                    "card",
+                    'generic card "Padel Arena | HSR Layout | Bookable"',
+                    "",
+                    "result_card",
+                ),
+                ClickableElement("e2", "link", 'link "Terms"', "/terms", "navigation"),
+            ],
+            visible_text="Padel venues\nBookable",
+            page_summary="Listing/results page.",
+        )
+
+        message = build_page_message(state, action_history=[], max_elements=10)
+
+        self.assertIn("Clickable cards/results", message)
+        self.assertIn("cursor-pointer generic refs are valid click targets", message)
+        self.assertLess(message.index("e50:"), message.index("e1:"))
+        self.assertLess(message.index("Clickable cards/results"), message.index("Other clickable elements"))
+        self.assertIn("If the visible text already satisfies the task, call finish now", message)
+        self.assertIn("Do not call snapshot unless the user explicitly asked", message)
 
 
 if __name__ == "__main__":

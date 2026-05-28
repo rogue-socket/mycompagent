@@ -54,7 +54,8 @@ def is_risky_action(action: ParsedAction, elements: Iterable[ElementRef]) -> boo
         if action.args:
             target = action.args[0]
             for elem in elements:
-                if elem.ref == target and _RISK_KEYWORDS.search(elem.description or ""):
+                label = f"{elem.description or ''} {getattr(elem, 'child_text', '')}"
+                if elem.ref == target and _RISK_KEYWORDS.search(label):
                     return True
     return False
 

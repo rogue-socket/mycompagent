@@ -37,13 +37,17 @@ def build_system_instruction(
         "## Rules",
         "",
         "- Only use element refs (e1, e2, ...) from the most recent page state. Never invent refs.",
+        "- Cursor-pointer generic card/result refs shown in the page state are valid click targets.",
+        "- When visible cards, result refs, or search controls exist, click/use those refs instead of guessing detail/entity URLs.",
+        "- If a guessed detail/entity URL lands on a 404 or not-found page, go back, use visible refs, or search instead of guessing another entity URL.",
+        "- Do not rely on visible text alone when a matching element ref is available.",
         "- Use 'fill' to enter text into a specific input field. Use 'type' only for the focused element.",
         "- If 'fill' fails, use click(ref) to focus the input first, then type(text) to enter the text.",
         "- Use 'press' for keyboard keys like Enter, Tab, Escape.",
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
         "  autocomplete dropdowns often cover it and cause timeout errors.",
         "- Call 'finish' when the task is complete.",
-        "- If you are stuck, try 'snapshot' to see the current page state.",
+        "- Do NOT call 'snapshot' for recovery; every step already includes a fresh page state.",
         "- If your previous action failed, try a different approach instead of repeating it.",
         "",
         "## Examples of good reasoning",
@@ -110,8 +114,8 @@ Previous action failed: "Element e25 not found in current page"
 
 Good reasoning:
 "My last click on e25 failed because that element doesn't exist on this page anymore.
-The page may have changed. Let me take a snapshot to see the current state."
-→ Tool call: snapshot()
+The current page state already shows the available refs. I'll choose the matching visible result link instead."
+→ Tool call: click(ref="e8")
 
 ### Example 5 — Recovery from fill failure
 Previous action failed: fill(ref="e37", value="padel rackets") → "too many arguments"
@@ -141,6 +145,7 @@ def build_page_message(
     domain_context: str | None = None,
     task: str | None = None,
     evidence_text: str | None = None,
+    task_context: str | None = None,
 ) -> str:
     """Build a per-step user message with current page state."""
     selected_elements = _select_clickable_elements(
@@ -169,13 +174,33 @@ def build_page_message(
             ]
         )
     else:
-        element_lines = [
+        card_lines = [
             _format_element_line(e.element_id, e.element_type, e.text, e.href, e.area)
             for e in selected_elements
+            if _is_card_element(e)
         ]
-        clickable_section = "Clickable elements:\n" + (
-            "\n".join(element_lines) if element_lines else "(none)"
-        )
+        other_lines = [
+            _format_element_line(e.element_id, e.element_type, e.text, e.href, e.area)
+            for e in selected_elements
+            if not _is_card_element(e)
+        ]
+        if card_lines:
+            clickable_section = "\n\n".join(
+                [
+                    "Clickable cards/results (cursor-pointer generic refs are valid click targets):\n"
+                    + "\n".join(card_lines),
+                    "Other clickable elements:\n"
+                    + ("\n".join(other_lines) if other_lines else "(none)"),
+                ]
+            )
+        else:
+            element_lines = [
+                _format_element_line(e.element_id, e.element_type, e.text, e.href, e.area)
+                for e in selected_elements
+            ]
+            clickable_section = "Clickable elements:\n" + (
+                "\n".join(element_lines) if element_lines else "(none)"
+            )
     history_lines = action_history[-12:]
     evidence_snippets = _task_evidence_snippets(
         state.visible_text,
@@ -190,6 +215,7 @@ def build_page_message(
     )
     route_quality_note = _route_quality_note(state, selected_elements, task or "")
     route_hints = wikipedia_route_hints(state, task or "")
+    bad_url_guess_note = _bad_url_guess_note(state, action_history, selected_elements)
 
     sections = [
         f"Current page:\nURL: {state.url}\nTitle: {state.title}\nType: {state.page_type}",
@@ -203,11 +229,17 @@ def build_page_message(
         evidence_lines = [f"- {snippet}" for snippet in evidence_snippets]
         sections.insert(3, "Task-focused evidence:\n" + "\n".join(evidence_lines))
 
+    if task_context:
+        sections.insert(2, "Task contract and evidence so far:\n" + task_context)
+
     if redirect_note:
         sections.insert(2, "Redirect/canonical note:\n" + redirect_note)
 
     if route_quality_note:
         sections.insert(2, "Route-quality note:\n" + route_quality_note)
+
+    if bad_url_guess_note:
+        sections.insert(2, "URL recovery note:\n" + bad_url_guess_note)
 
     if route_hints:
         hint_lines = [
@@ -228,9 +260,58 @@ def build_page_message(
     if domain_context:
         sections.append(f"Tips for this site:\n{domain_context}")
 
-    sections.append("Call the appropriate tool for the next action.")
+    finish_instruction = (
+        "Call the appropriate tool for the next action. If the visible text already "
+        "satisfies the task, call finish now. Do not call snapshot unless the user "
+        "explicitly asked for an extra snapshot."
+    )
+    if task_context:
+        finish_instruction = (
+            "Call finish only when the current page plus the task evidence ledger "
+            "satisfy every hard constraint and any cheapest/lowest/best comparison "
+            "is consistent with the best evidence so far. Otherwise keep gathering "
+            "or normalizing evidence. Do not call snapshot unless the user explicitly "
+            "asked for an extra snapshot."
+        )
+    sections.append(finish_instruction)
 
     return "\n\n".join(sections)
+
+
+def planner_state_debug_payload(
+    state: InterpreterState,
+    *,
+    max_elements: int,
+    task: str | None = None,
+    evidence_text: str | None = None,
+) -> dict:
+    selected_elements = _select_clickable_elements(
+        state.clickable_elements,
+        max_elements,
+        task=task,
+        current_title=state.title,
+    )
+    return {
+        "selected_clickables": [
+            {
+                "ref": element.element_id,
+                "type": element.element_type,
+                "area": element.area,
+                "text": element.text,
+                "href": element.href,
+            }
+            for element in selected_elements
+        ],
+        "prioritized_card_refs": [
+            element.element_id for element in selected_elements if _is_card_element(element)
+        ],
+        "evidence_snippets": _task_evidence_snippets(
+            state.visible_text,
+            evidence_text or "",
+            task or "",
+            state.title,
+        ),
+    }
 
 
 def _format_element_line(
@@ -254,16 +335,26 @@ def _select_clickable_elements(
     if len(elements) <= max_elements:
         return elements
 
+    selected: list = []
+    seen: set[str] = set()
+
+    for element in elements:
+        if _is_card_element(element):
+            selected.append(element)
+            seen.add(element.element_id)
+        if len(selected) >= max_elements:
+            return selected
+
     scored: list[tuple[int, int, object]] = []
     terms = _task_terms(task or "", current_title)
     if terms:
         for index, element in enumerate(elements):
+            if element.element_id in seen:
+                continue
             score = _element_relevance_score(element.text, element.href, terms)
             if score:
                 scored.append((score, -index, element))
 
-    selected: list = []
-    seen: set[str] = set()
     for _, _, element in sorted(scored, reverse=True):
         selected.append(element)
         seen.add(element.element_id)
@@ -277,6 +368,13 @@ def _select_clickable_elements(
         if len(selected) >= max_elements:
             break
     return selected
+
+
+def _is_card_element(element: object) -> bool:
+    return (
+        getattr(element, "element_type", "") == "card"
+        or getattr(element, "area", "") in {"card", "result_card"}
+    )
 
 
 def _task_terms(task: str, current_title: str) -> set[str]:
@@ -510,6 +608,48 @@ def _route_quality_note(
         "directly moves toward the target; prefer broader bridge links such as "
         "food, cuisine, culture, geography, technology, media, or history when "
         "they match the goal."
+    )
+
+
+def _bad_url_guess_note(
+    state: InterpreterState,
+    action_history: list[str],
+    selected_elements: list,
+) -> str:
+    if not _looks_like_not_found_page(state):
+        return ""
+    if not any("playwright-cli goto" in action for action in action_history[-3:]):
+        return ""
+
+    preferred_refs = [
+        element.element_id
+        for element in selected_elements
+        if _is_card_element(element) or getattr(element, "element_type", "") == "input"
+    ][:5]
+    ref_note = (
+        f" Preferred visible refs: {', '.join(preferred_refs)}."
+        if preferred_refs
+        else ""
+    )
+    return (
+        "The current page appears to be a 404/not-found page after direct URL navigation. "
+        "Do not guess another detail/entity URL; go back, use visible result refs, or use "
+        "a search/filter control instead."
+        + ref_note
+    )
+
+
+def _looks_like_not_found_page(state: InterpreterState) -> bool:
+    haystack = f"{state.title}\n{state.visible_text[:1200]}".lower()
+    return any(
+        marker in haystack
+        for marker in (
+            "404",
+            "not found",
+            "page not found",
+            "couldn't find",
+            "could not find",
+        )
     )
 
 
