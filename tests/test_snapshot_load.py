@@ -46,6 +46,34 @@ class SnapshotLoadTests(unittest.TestCase):
         self.assertEqual(state.elements[0].ref, "e939")
         self.assertEqual(state.elements[0].url, "/wiki/Manga")
 
+    def test_load_snapshot_replaces_stale_file_metadata_with_cli_output(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "snap.yml"
+            path.write_text(
+                "Page URL: https://old.example.com/\n"
+                "Page Title: Old title\n"
+                "- heading \"Example\"\n",
+                encoding="utf-8",
+            )
+            output = (
+                "### Page\n"
+                "- Page URL: https://new.example.com/\n"
+                "- Page Title: New title\n"
+                "### Snapshot\n"
+                f"- [Snapshot]({path})"
+            )
+
+            text, src = load_snapshot_text(output)
+            state = parse_snapshot(text)
+
+            self.assertEqual(str(path), src)
+            self.assertIn("Page URL: https://new.example.com/", text)
+            self.assertIn("Page Title: New title", text)
+            self.assertNotIn("Page URL: https://old.example.com/", text)
+            self.assertNotIn("Page Title: Old title", text)
+            self.assertEqual(state.url, "https://new.example.com/")
+            self.assertEqual(state.title, "New title")
+
 
 if __name__ == "__main__":
     unittest.main()
