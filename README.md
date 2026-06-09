@@ -205,26 +205,26 @@ next guess.
 
 ### 3.8 Canvas gesture test: Perfect Circle
 
-The Perfect Circle game on neal.fun is a good negative control for the current
-agent. It starts normally, but the actual game requires freehand mouse movement
-over a canvas. The current action set can click exposed element refs and type or
-press keys, but it does not expose an arbitrary mouse-path drawing action.
+The Perfect Circle game on neal.fun is a focused canvas-gesture test. The page
+starts normally, then asks for a freehand circle around a visual target that is
+not exposed as a normal clickable control. The agent now has a bounded
+`draw_circle` tool for this specific gesture class.
 
 ```bash
-browser-agent "Play the Perfect Circle game on neal.fun. Dismiss any intro or cookie popups if they block the game. Inspect the page, draw one circle as accurately as possible using the available browser actions, then finish with the score shown on the page. If the page requires canvas mouse drawing that the available tools cannot perform, finish with a clear explanation after confirming that limitation from the page." \
+browser-agent "Play the Perfect Circle game on neal.fun. Dismiss any intro or cookie popups if they block the game. Start the game, draw one circle as accurately as possible using draw_circle with radius 170 and steps 24, then finish with the score shown on the page." \
   --auto \
   --llm-provider codex \
   --headed \
   --debug \
   --start-url https://neal.fun/perfect-circle/ \
-  --max-steps 25
+  --max-steps 20
 ```
 
-Result: `runs/run_20260609T072626Z` clicked `Go`, reached the drawing prompt,
-and then correctly stopped without a score because no drawable canvas ref or
-mouse-path command was available. To make this playable, the agent needs a
-bounded gesture primitive, such as `draw_path` or `draw_circle`, implemented in
-the Playwright executor and exposed to the planner with guardrails.
+Earlier runs such as `runs/run_20260609T072626Z` and
+`runs/run_20260609T113940Z` clicked `Go`, reached the drawing prompt, and then
+stopped because no canvas gesture primitive was available. After adding
+`draw_circle`, `runs/run_20260609T114407Z` completed in 4 steps. The page rendered
+`99.8%` with the label `Divine circle`.
 
 ### 3.9 Infinite Craft drag test
 
