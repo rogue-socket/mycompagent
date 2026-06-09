@@ -806,6 +806,28 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                missing_text_target = self._ungrounded_text_input_warning(
+                    parsed_action,
+                    interpreter_state,
+                )
+                if missing_text_target:
+                    self.last_step_error = missing_text_target
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "no_editable_text_target",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 risky_navigation = self._stateful_task_tab_navigation_warning(
                     parsed_action,
                     interpreter_state,
@@ -1263,6 +1285,26 @@ class DecisionLoop:
         return any(
             getattr(element, "element_type", "") == "input"
             for element in getattr(interpreter_state, "clickable_elements", [])
+        )
+
+    def _ungrounded_text_input_warning(
+        self,
+        parsed_action: Any,
+        interpreter_state: Any,
+    ) -> str:
+        if parsed_action.command != "type" or not parsed_action.args:
+            return ""
+        text = str(parsed_action.args[0] or "")
+        if not text.strip():
+            return ""
+        if self._has_stateful_task_controls(interpreter_state):
+            return ""
+        return (
+            "Text input target guard: the current page state does not expose an "
+            "active editable or input control. Do not type text into the active page. "
+            "Switch back to the tab that contains the task form, click or focus a "
+            "visible textbox, or use fill with a current visible ref before entering "
+            "text."
         )
 
     def _recent_lookup_workflow(self) -> bool:

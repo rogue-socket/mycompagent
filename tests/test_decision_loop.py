@@ -1073,6 +1073,101 @@ class StaleRefGuardPlanner:
         pass
 
 
+class UngroundedTypeGuardExecutor:
+    def __init__(self) -> None:
+        self.current_tab = 1
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command == "playwright-cli tab-select 0":
+            self.current_tab = 0
+            return CommandResult(
+                command,
+                0,
+                "### Result\n- 0: (current) [Task](https://example.com/task)\n"
+                "- 1: [](about:blank)",
+                "",
+            )
+        if command == "playwright-cli fill e15 baseX":
+            return CommandResult(command, 0, "Filled", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        if self.current_tab == 1:
+            return CommandResult(
+                "playwright-cli snapshot",
+                0,
+                "\n".join(
+                    [
+                        "### Open tabs",
+                        "- 0: [Task](https://example.com/task)",
+                        "- 1: (current) [](about:blank)",
+                        "Page URL: about:blank",
+                        "Page Title:",
+                        "Snapshot",
+                    ]
+                )
+                + "\n",
+                "",
+            )
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                ['textbox "Value" : "base" [ref=e15]'],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        if self.current_tab == 1:
+            return ""
+        return "Task value base"
+
+
+class UngroundedTypeGuardPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "type",
+                {"text": "baseX"},
+                "Mistakenly type the value while a blank helper tab is current.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Text input target guard", message)
+            self.testcase.assertIn("does not expose an active editable", message)
+            return _tool(
+                "tab_select",
+                {"index": "0"},
+                "Return to the task page before entering text.",
+            )
+        if step == 3:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "Use the fresh task-page ref.",
+            )
+        if step == 4:
+            return _tool("finish", {"reason": "Ungrounded type was corrected."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 class FetchUrlExecutor:
     def __init__(self) -> None:
         self.commands: list[str] = []
@@ -2234,6 +2329,37 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             actions = _read_jsonl(paths.actions_log)
             self.assertEqual(actions[0]["execution_result"], "skipped")
             self.assertEqual(actions[0]["reason"], "ref_not_in_current_snapshot")
+            self.assertEqual(actions[1]["command"], "playwright-cli tab-select 0")
+            self.assertEqual(actions[2]["command"], "playwright-cli fill e15 baseX")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_type_without_current_editable_target_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = UngroundedTypeGuardPlanner(self)
+            executor = UngroundedTypeGuardExecutor()
+            loop = DecisionLoop(
+                task="Use lookup evidence to update the task form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 5, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli type baseX", executor.commands)
+            self.assertIn("playwright-cli fill e15 baseX", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "no_editable_text_target")
             self.assertEqual(actions[1]["command"], "playwright-cli tab-select 0")
             self.assertEqual(actions[2]["command"], "playwright-cli fill e15 baseX")
             self.assertEqual(actions[-1]["command"], "finish")
