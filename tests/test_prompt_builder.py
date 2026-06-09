@@ -21,6 +21,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("public information", message)
         self.assertIn("Reserve ask_human", message)
         self.assertIn("src_token", message)
+        self.assertIn("treat that token as page evidence", message)
+        self.assertIn("binary image variants", message)
         self.assertIn("before asking the human", message)
         self.assertIn("A new tab opens blank", message)
         self.assertIn("Stay there until you have loaded and extracted", message)
