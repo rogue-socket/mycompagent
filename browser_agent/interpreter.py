@@ -448,7 +448,7 @@ def _supports_dom_evidence(executor: PlaywrightExecutor) -> bool:
     )
 
 
-def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 2400) -> str:
+def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 5000) -> str:
     code = """async page => {
   return await page.evaluate(() => {
     const textOf = (el, max = 80) => (el.innerText || el.textContent || '')
@@ -491,6 +491,7 @@ def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 2400) -> st
         src: clip(frame.src, 220),
         title: clip(frame.title),
         aria: clip(attr(frame, 'aria-label')),
+        nearby: clip(textOf(frame.closest('figure, label, div, section, article') || frame.parentElement), 120),
       }));
     const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
       .filter((button) => visible(button))
@@ -515,7 +516,7 @@ def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 2400) -> st
       html: clip(active.innerHTML || '', 300),
       selection: clip(String(window.getSelection ? window.getSelection() : ''), 240),
     }] : [];
-    return [...activeEditable, ...images, ...links, ...iframes, ...buttons];
+    return [...activeEditable, ...iframes, ...buttons, ...images, ...links];
   });
 }"""
     result = executor.run("playwright-cli run-code " + shlex.quote(code))
@@ -546,7 +547,10 @@ def _extract_json_result(output: str) -> Any | None:
 
 def _format_dom_evidence(items: list[Any]) -> list[str]:
     lines: list[str] = []
-    for item in items:
+    for item in sorted(
+        (item for item in items if isinstance(item, dict)),
+        key=_dom_evidence_priority,
+    ):
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind") or "node")
@@ -570,6 +574,23 @@ def _format_dom_evidence(items: list[Any]) -> list[str]:
         detail = " ".join(f"{key}={value!r}" for key, value in fields[:5])
         lines.append(f"- {kind}: {detail}")
     return lines
+
+
+def _dom_evidence_priority(item: dict[str, Any]) -> int:
+    kind = str(item.get("kind") or "")
+    if kind == "active_editable":
+        return 0
+    if kind == "iframe":
+        return 1
+    if _status_indicator(item):
+        return 2
+    if kind == "button":
+        return 3
+    if kind == "image":
+        return 4
+    if kind == "link":
+        return 5
+    return 6
 
 
 def _status_indicator(item: dict[str, Any]) -> str:

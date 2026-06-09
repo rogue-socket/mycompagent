@@ -109,6 +109,42 @@ class InterpreterTests(unittest.TestCase):
         self.assertIn("status_indicator: status='success'", state.dom_evidence)
         self.assertIn("Requirement B is valid.", state.dom_evidence)
 
+    def test_dom_evidence_prioritizes_iframes_over_generic_images(self) -> None:
+        snapshot = SnapshotState(
+            url="https://example.com/form",
+            title="Form",
+            elements=[],
+            raw_text="",
+        )
+        noisy_images = [
+            {
+                "kind": "image",
+                "src": f"https://example.com/assets/noise-{index}.svg",
+                "nearby": "Decorative content " * 12,
+            }
+            for index in range(40)
+        ]
+
+        state = interpret_page(
+            snapshot,
+            DummyExecutor(
+                dom_items=[
+                    *noisy_images,
+                    {
+                        "kind": "iframe",
+                        "src": "https://maps.example.com/embed?query=visible-clue",
+                        "title": "Embedded map",
+                        "nearby": "Find this location",
+                    },
+                ]
+            ),
+            max_clickables=10,
+        )
+
+        self.assertIn("iframe:", state.dom_evidence)
+        self.assertIn("maps.example.com/embed", state.dom_evidence)
+        self.assertIn("Find this location", state.dom_evidence)
+
     def test_interpreter_state_serializes_dom_evidence_for_debugging(self) -> None:
         snapshot = SnapshotState(
             url="https://example.com/form",

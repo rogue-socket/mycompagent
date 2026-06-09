@@ -71,6 +71,7 @@ Rules:
 - For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints; make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.
 - If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human; reserve ask_human for operator-only visual/private values.
 - After using another tab or page for lookup, switch back to the original task tab before using task-page element refs or filling task-page controls.
+- For iframe-only visual clues, inspect iframe src/title/nearby DOM evidence and use public lookup when possible; do not use frame-scoped refs as normal element refs unless they are listed as current clickable elements.
 - Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
 - Use format_selection for rich-text formatting on selected editable text instead of clicking toolbar buttons when possible.
 - Choose one action that advances the browser task."""

@@ -21,6 +21,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("public information", message)
         self.assertIn("Reserve ask_human", message)
         self.assertIn("switch back to the original task tab", message)
+        self.assertIn("iframe-only visual clues", message)
+        self.assertIn("Do not use frame-scoped refs", message)
 
     def test_task_relevant_links_are_prioritized_in_message(self) -> None:
         elements = [

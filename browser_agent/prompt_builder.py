@@ -50,6 +50,7 @@ def build_system_instruction(
         "- For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints. Before editing a value, compare the current requirements/status lines with the current value, make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.",
         "- If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human. Reserve ask_human for operator-only visual/private values that page evidence and browser lookup cannot obtain.",
         "- After using another tab or page for lookup, switch back to the original task tab before using task-page element refs or filling task-page controls.",
+        "- For iframe-only visual clues, inspect iframe src/title/nearby DOM evidence and use public lookup when possible. Do not use frame-scoped refs as normal element refs unless they are listed as current clickable elements.",
         "- Use 'draw_circle' when a game asks for a freehand circle on a canvas-like surface.",
         "- Use 'ask_human' when a short value visible to the operator, such as CAPTCHA text, is needed to continue.",
         "- Call 'finish' when the task is complete.",
