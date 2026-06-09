@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 
 from browser_agent.interpreter import InterpreterState
-from browser_agent.route_planner import wikipedia_route_hints
 
 
 def build_system_instruction(
@@ -50,10 +49,6 @@ def build_system_instruction(
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
         "- Use 'draw_circle' when a game asks for a freehand circle on a canvas-like surface.",
         "- Use 'ask_human' when a short value visible to the operator, such as CAPTCHA text, is needed to continue.",
-        "- Use 'password_game_elements' before editing Password Game Rule 18; the visible input counter is not the element sum.",
-        "- If password_game_elements returns suggested_password, fill the password input with that exact value.",
-        "- In Password Game runs, preserve confirmed rule-bearing substrings such as CAPTCHA text, Wordle answers, chess moves, country names, sponsor names, roman numerals, the moon emoji, and Paul's egg.",
-        "- When adjusting Password Game digit sums, edit padding digits or leap-year choices instead of changing confirmed rule-bearing substrings.",
         "- Call 'finish' when the task is complete.",
         "- Do NOT call 'snapshot' for recovery; every step already includes a fresh page state.",
         "- If your previous action failed, try a different approach instead of repeating it.",
@@ -221,8 +216,6 @@ def build_page_message(
         state.title,
         evidence_text or "",
     )
-    route_quality_note = _route_quality_note(state, selected_elements, task or "")
-    route_hints = wikipedia_route_hints(state, task or "")
     bad_url_guess_note = _bad_url_guess_note(state, action_history, selected_elements)
 
     sections = [
@@ -246,21 +239,8 @@ def build_page_message(
     if redirect_note:
         sections.insert(2, "Redirect/canonical note:\n" + redirect_note)
 
-    if route_quality_note:
-        sections.insert(2, "Route-quality note:\n" + route_quality_note)
-
     if bad_url_guess_note:
         sections.insert(2, "URL recovery note:\n" + bad_url_guess_note)
-
-    if route_hints:
-        hint_lines = [
-            (
-                f"- {hint.element.element_id}: {_quoted_label(hint.element.text)} "
-                f"({hint.reason})"
-            )
-            for hint in route_hints
-        ]
-        sections.insert(2, "Route helper candidates:\n" + "\n".join(hint_lines))
 
     if last_error:
         recovery_note = _custom_control_recovery_note(last_error, selected_elements, task or "")
@@ -415,7 +395,6 @@ def _task_terms(task: str, current_title: str) -> set[str]:
         "title",
         "url",
         "website",
-        "wikipedia",
     }
     title_terms = {
         word.lower()
@@ -574,10 +553,7 @@ def _task_target_candidates(task: str) -> list[str]:
 
 
 def _clean_task_target(value: str) -> str:
-    cleaned = value.strip()
-    cleaned = re.sub(r"\s+on\s+wikipedia\b.*$", "", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+wikipedia\s+article\b.*$", "", cleaned, flags=re.IGNORECASE)
-    return cleaned.strip()
+    return value.strip()
 
 
 def _redirected_from_titles(text: str) -> list[str]:
@@ -589,38 +565,12 @@ def _redirected_from_titles(text: str) -> list[str]:
 
 
 def _strip_site_suffix(title: str) -> str:
-    return re.sub(r"\s+-\s+Wikipedia\s*$", "", title).strip()
+    return re.sub(r"\s+[-|]\s+[^-|]{2,80}$", "", title).strip()
 
 
 def _normalize_article_title(title: str) -> str:
     stripped = _strip_site_suffix(title)
     return re.sub(r"[^a-z0-9]+", " ", stripped.lower()).strip()
-
-
-def _route_quality_note(
-    state: InterpreterState,
-    selected_elements: list,
-    task: str,
-) -> str:
-    if state.page_type != "article":
-        return ""
-    if _task_mentions_taxonomy(task):
-        return ""
-    taxonomy_links = [
-        element
-        for element in selected_elements
-        if getattr(element, "area", "other") == "taxonomy"
-    ]
-    if not taxonomy_links:
-        return ""
-    examples = ", ".join(_quoted_label(link.text) for link in taxonomy_links[:3])
-    return (
-        "Visible links include biological taxonomy/classification links "
-        f"({examples}). Avoid looping deeper into local classification unless it "
-        "directly moves toward the target; prefer broader bridge links such as "
-        "food, cuisine, culture, geography, technology, media, or history when "
-        "they match the goal."
-    )
 
 
 def _bad_url_guess_note(
@@ -661,20 +611,5 @@ def _looks_like_not_found_page(state: InterpreterState) -> bool:
             "page not found",
             "couldn't find",
             "could not find",
-        )
-    )
-
-
-def _task_mentions_taxonomy(task: str) -> bool:
-    lowered = task.lower()
-    return any(
-        marker in lowered
-        for marker in (
-            "taxonomy",
-            "taxonomic",
-            "species",
-            "genus",
-            "biology",
-            "biological",
         )
     )

@@ -94,10 +94,10 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("DOM evidence:", message)
         self.assertIn("captcha.png", message)
 
-    def test_wikipedia_redirect_note_marks_canonical_target(self) -> None:
+    def test_redirect_note_marks_canonical_target(self) -> None:
         state = InterpreterState(
-            url="https://en.wikipedia.org/wiki/Hip-hop",
-            title="Hip-hop - Wikipedia",
+            url="https://example.com/articles/hip-hop",
+            title="Hip-hop - Example",
             page_type="article",
             clickable_elements=[],
             visible_text="Hip-hop is a music genre.",
@@ -107,7 +107,7 @@ class PromptBuilderTests(unittest.TestCase):
         message = build_page_message(
             state,
             action_history=[],
-            task="Navigate from Quantum mechanics to Hip hop music on Wikipedia.",
+            task="Navigate from Quantum mechanics to Hip hop music.",
             evidence_text="Redirected from Hip hop music",
         )
 
@@ -115,14 +115,13 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("canonical article for task target 'Hip hop music'", message)
         self.assertIn("call finish", message)
 
-    def test_route_quality_note_warns_on_taxonomy_links(self) -> None:
+    def test_task_relevant_article_candidates_are_included_generically(self) -> None:
         state = InterpreterState(
-            url="https://en.wikipedia.org/wiki/Snakehead_(fish)",
-            title="Snakehead (fish) - Wikipedia",
+            url="https://example.com/articles/fish",
+            title="Fish - Example",
             page_type="article",
             clickable_elements=[
-                ClickableElement("e1", "link", 'link "Actinopterygii"', "/wiki/Actinopterygii", "taxonomy"),
-                ClickableElement("e2", "link", 'link "Sushi"', "/wiki/Sushi", "article"),
+                ClickableElement("e3", "link", 'link "Japanese cuisine"', "/articles/japanese-cuisine", "article"),
             ],
             visible_text="Snakeheads are freshwater fish.",
             page_summary="Snakeheads are freshwater fish.",
@@ -131,33 +130,10 @@ class PromptBuilderTests(unittest.TestCase):
         message = build_page_message(
             state,
             action_history=[],
-            task="Navigate from Antarctica to Sushi on Wikipedia.",
+            task="Navigate from Antarctica to Sushi.",
         )
 
-        self.assertIn("Route-quality note:", message)
-        self.assertIn("Actinopterygii", message)
-        self.assertIn("Avoid looping deeper into local classification", message)
-
-    def test_route_helper_candidates_are_included_for_wikipedia_tasks(self) -> None:
-        state = InterpreterState(
-            url="https://en.wikipedia.org/wiki/Snakehead_(fish)",
-            title="Snakehead (fish) - Wikipedia",
-            page_type="article",
-            clickable_elements=[
-                ClickableElement("e3", "link", 'link "Japanese cuisine"', "/wiki/Japanese_cuisine", "article"),
-            ],
-            visible_text="Snakeheads are freshwater fish.",
-            page_summary="Snakeheads are freshwater fish.",
-        )
-
-        message = build_page_message(
-            state,
-            action_history=[],
-            task="Navigate from Antarctica to Sushi on Wikipedia.",
-        )
-
-        self.assertIn("Route helper candidates:", message)
-        self.assertIn("e3: Japanese cuisine", message)
+        self.assertIn('e3: [article] link - link "Japanese cuisine" -> /articles/japanese-cuisine', message)
 
     def test_select_failure_prompts_custom_option_recovery(self) -> None:
         state = InterpreterState(

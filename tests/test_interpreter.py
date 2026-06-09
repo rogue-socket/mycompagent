@@ -182,7 +182,7 @@ class InterpreterTests(unittest.TestCase):
         self.assertEqual(areas['link "Deutsch"'], "language")
         self.assertEqual(areas['link "Help"'], "navigation")
 
-    def test_biological_taxonomy_links_are_labeled(self) -> None:
+    def test_article_content_links_are_labeled_without_topic_specific_classification(self) -> None:
         elements = [
             ElementRef(ref="e1", description='link "Actinopterygii"', url="/wiki/Actinopterygii"),
             ElementRef(ref="e2", description='link "Sushi"', url="/wiki/Sushi"),
@@ -197,7 +197,7 @@ class InterpreterTests(unittest.TestCase):
         state = interpret_page(snapshot, DummyExecutor(), max_clickables=10)
         areas = {item.text: item.area for item in state.clickable_elements}
 
-        self.assertEqual(areas['link "Actinopterygii"'], "taxonomy")
+        self.assertEqual(areas['link "Actinopterygii"'], "article")
         self.assertEqual(areas['link "Sushi"'], "article")
 
     def test_article_page_not_classified_as_login_page_from_nav(self) -> None:

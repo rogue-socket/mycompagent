@@ -440,7 +440,7 @@ class DragFallbackPlanner:
 
 class CaptchaExecutor:
     def __init__(self) -> None:
-        self.password = "Aaaaa!799juneVIIpepsi"
+        self.value = "initial"
         self.commands: list[str] = []
 
     def run(self, command: str, timeout: float = 45.0) -> CommandResult:
@@ -449,20 +449,20 @@ class CaptchaExecutor:
             return CommandResult(command, 0, "", "")
         if command == 'playwright-cli eval "document.body.innerText"':
             return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
-        if shlex.split(command) == ["playwright-cli", "fill", "e15", "Aaaaa!799juneVIIpepsiABCD"]:
-            self.password = "Aaaaa!799juneVIIpepsiABCD"
-            return CommandResult(command, 0, "Filled password", "")
+        if shlex.split(command) == ["playwright-cli", "fill", "e15", "initialABCD"]:
+            self.value = "initialABCD"
+            return CommandResult(command, 0, "Filled value", "")
         return CommandResult(command, 1, "", f"Unexpected command: {command}")
 
     def snapshot(self) -> CommandResult:
-        if self.password.endswith("ABCD"):
+        if self.value.endswith("ABCD"):
             return CommandResult(
                 "playwright-cli snapshot",
                 0,
                 _workflow_snapshot(
                     [
-                        f'textbox "Please choose a password" : "{self.password}" [ref=e15]',
-                        'text "Rule 10 passed"',
+                        f'textbox "Enter code" : "{self.value}" [ref=e15]',
+                        'text "Visual challenge passed"',
                     ]
                 ),
                 "",
@@ -472,21 +472,18 @@ class CaptchaExecutor:
             0,
             _workflow_snapshot(
                 [
-                    f'textbox "Please choose a password" : "{self.password}" [ref=e15]',
-                    'text "Rule 10"',
-                    'text "Your password must include this CAPTCHA"',
+                    f'textbox "Enter code" : "{self.value}" [ref=e15]',
+                    'text "Visual challenge"',
+                    'text "Enter the code shown in the image"',
                 ]
             ),
             "",
         )
 
     def _visible_text(self) -> str:
-        if self.password.endswith("ABCD"):
-            return "The Password Game\nPlease choose a password\nRule 10 passed"
-        return (
-            "The Password Game\nPlease choose a password\nRule 10\n"
-            "Your password must include this CAPTCHA"
-        )
+        if self.value.endswith("ABCD"):
+            return "Visual challenge passed"
+        return "Visual challenge\nEnter the code shown in the image"
 
 
 class CaptchaPlanner:
@@ -503,80 +500,24 @@ class CaptchaPlanner:
                 "ask_human",
                 {
                     "question": "What CAPTCHA text is shown?",
-                    "reason": "Rule 10 requires visual CAPTCHA text not present in the DOM.",
+                    "reason": "The required short visual code is not present in the DOM.",
                 },
-                "Ask the operator for the visual CAPTCHA.",
+                "Ask the operator for the visual code.",
             )
         if step == 2:
             self.testcase.assertEqual(self.tool_results[-1]["tool_name"], "ask_human")
             self.testcase.assertEqual(self.tool_results[-1]["answer"], "ABCD")
             return _tool(
                 "fill",
-                {"ref": "e15", "value": "Aaaaa!799juneVIIpepsiABCD"},
-                "Use the human-provided CAPTCHA while preserving previous rules.",
+                {"ref": "e15", "value": "initialABCD"},
+                "Use the human-provided code.",
             )
         if step == 3:
-            self.testcase.assertIn("Rule 10 passed", message)
-            return _tool("finish", {"reason": "CAPTCHA rule passed."}, "Done.")
+            self.testcase.assertIn("Visual challenge passed", message)
+            return _tool("finish", {"reason": "Visual challenge passed."}, "Done.")
         raise AssertionError(f"Unexpected planner step {step}")
 
     def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
-        self.tool_results.append({"tool_name": tool_name, **result})
-
-
-class PasswordElementsExecutor:
-    def __init__(self) -> None:
-        self.commands: list[str] = []
-
-    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
-        self.commands.append(command)
-        if command.startswith("playwright-cli open"):
-            return CommandResult(command, 0, "", "")
-        if command == 'playwright-cli eval "document.body.innerText"':
-            return CommandResult(command, 0, "### Result\n\"Rule 18 active\"", "")
-        return CommandResult(command, 1, "", f"Unexpected command: {command}")
-
-    def snapshot(self) -> CommandResult:
-        return CommandResult(
-            "playwright-cli snapshot",
-            0,
-            _workflow_snapshot(
-                [
-                    'textbox "Please choose a password" : "Aaaaa37!maypepsiV-VII4dgf7wharfHe🌘KenyaNf4+🥚" [ref=e15]',
-                    "text \"Rule 18\"",
-                    'text "The elements in your password must have atomic numbers that add up to 200."',
-                ]
-            ),
-            "",
-        )
-
-
-class PasswordElementsPlanner:
-    def __init__(self, testcase: unittest.TestCase) -> None:
-        self.testcase = testcase
-        self.messages: list[str] = []
-        self.tool_results: list[dict[str, object]] = []
-
-    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
-        self.messages.append(message)
-        step = len(self.messages)
-        password = "Aaaaa37!maypepsiV-VII4dgf7wharfHe🌘KenyaNf4+🥚"
-        if step == 1:
-            return _tool(
-                "password_game_elements",
-                {"password": password},
-                "Compute the Rule 18 element sum before editing.",
-            )
-        if step == 2:
-            self.testcase.assertEqual(
-                self.tool_results[-1]["tool_name"], "password_game_elements"
-            )
-            self.testcase.assertEqual(self.tool_results[-1]["current_sum"], 180)
-            self.testcase.assertEqual(self.tool_results[-1]["suggested_suffix"], "HK")
-            return _tool("finish", {"reason": "Helper returned HK."}, "Done.")
-        raise AssertionError(f"Unexpected planner step {step}")
-
-    def send_tool_result(self, tool_name: str, result: dict[str, object]) -> None:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
@@ -849,7 +790,7 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             planner = CaptchaPlanner(self)
             executor = CaptchaExecutor()
             loop = DecisionLoop(
-                task="Pass the CAPTCHA rule.",
+                task="Pass the visual challenge.",
                 mode="auto",
                 planner=planner,
                 config={
@@ -860,7 +801,7 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                 },
                 paths=paths,
                 executor=executor,
-                open_url="http://127.0.0.1:8766/password-game.html",
+                open_url="http://127.0.0.1:8766/visual-challenge.html",
                 open_args=[],
                 debug=False,
                 human_input=lambda prompt: "ABCD",
@@ -876,8 +817,8 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                     if not command.startswith("playwright-cli eval")
                 ],
                 [
-                    ["playwright-cli", "open", "http://127.0.0.1:8766/password-game.html"],
-                    ["playwright-cli", "fill", "e15", "Aaaaa!799juneVIIpepsiABCD"],
+                    ["playwright-cli", "open", "http://127.0.0.1:8766/visual-challenge.html"],
+                    ["playwright-cli", "fill", "e15", "initialABCD"],
                 ],
             )
             actions = _read_jsonl(paths.actions_log)
@@ -887,36 +828,8 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertNotIn("ABCD", json.dumps(actions[0]))
             self.assertEqual(
                 shlex.split(actions[1]["command"]),
-                ["playwright-cli", "fill", "e15", "Aaaaa!799juneVIIpepsiABCD"],
+                ["playwright-cli", "fill", "e15", "initialABCD"],
             )
-            self.assertEqual(actions[-1]["command"], "finish")
-
-    def test_password_game_elements_returns_planner_result(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            paths = RunPaths(root / "run")
-            paths.snapshots.mkdir(parents=True)
-            planner = PasswordElementsPlanner(self)
-            executor = PasswordElementsExecutor()
-            loop = DecisionLoop(
-                task="Use the Password Game element helper.",
-                mode="auto",
-                planner=planner,
-                config={"max_steps": 3, "max_errors": 1, "min_visible_text": 0},
-                paths=paths,
-                executor=executor,
-                open_url="http://127.0.0.1:8766/password-game.html",
-                open_args=[],
-                debug=False,
-            )
-
-            result = loop.run()
-
-            self.assertEqual(result.stop_reason, "completed")
-            actions = _read_jsonl(paths.actions_log)
-            self.assertEqual(actions[0]["command"], "password_game_elements")
-            self.assertEqual(actions[0]["current_sum"], 180)
-            self.assertEqual(actions[0]["suggested_suffix"], "HK")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_finish_validation_rejects_higher_price_than_evidence(self) -> None:

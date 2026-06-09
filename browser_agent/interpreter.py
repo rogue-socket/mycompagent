@@ -85,7 +85,11 @@ def _extract_clickables(
     title: str = "",
 ) -> list[ClickableElement]:
     clickables: list[ClickableElement] = []
-    is_article_page = _looks_like_article_page(url, title)
+    has_result_cards = any(
+        _is_cursor_pointer_generic(elem) and _has_meaningful_card_text(elem)
+        for elem in elements
+    )
+    is_article_page = _looks_like_article_page(url, title) and not has_result_cards
     for elem in elements:
         desc = elem.description.lower()
         if _is_clickable_element(elem):
@@ -106,10 +110,10 @@ def _extract_clickables(
                     ),
                 )
             )
-    if is_article_page:
-        clickables = _rank_article_clickables(clickables, url)
-    elif any(item.element_type == "card" for item in clickables):
+    if any(item.element_type == "card" for item in clickables):
         clickables = _rank_card_clickables(clickables)
+    elif is_article_page:
+        clickables = _rank_article_clickables(clickables, url)
     return clickables[:max_items]
 
 
@@ -175,9 +179,15 @@ def _extract_label(description: str) -> str:
 
 
 def _looks_like_article_page(url: str, title: str) -> bool:
-    lowered_url = url.lower()
     lowered_title = title.lower()
-    return "/wiki/" in lowered_url or " - wikipedia" in lowered_title or " | mdn" in lowered_title
+    parsed = urlparse(url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    return (
+        len(path_parts) >= 1
+        and not parsed.query
+        and bool(title.strip())
+        and not any(term in lowered_title for term in ("search", "login", "sign in"))
+    )
 
 
 def _rank_article_clickables(
@@ -238,7 +248,6 @@ def _article_clickable_priority(item: ClickableElement, current_url: str) -> int
     area_priority = {
         "article": 0,
         "other": 1,
-        "taxonomy": 2,
         "action": 2,
         "contents": 3,
         "navigation": 4,
@@ -270,8 +279,6 @@ def _classify_clickable_area(
         return "language"
     if _is_page_chrome_link(lowered) or _is_navigation_href(href):
         return "navigation"
-    if is_article_page and _is_taxonomy_link(lowered, href):
-        return "taxonomy"
     if is_article_page and _is_article_content_href(href, current_url):
         return "article"
     return "other"
@@ -296,8 +303,6 @@ def _is_page_chrome_link(text: str) -> bool:
         "link \"jump to content\"",
         "link \"skip to main content\"",
         "link \"skip to search\"",
-        "link \"wikipedia the free encyclopedia\"",
-        "link \"mdn\"",
         "link \"donate\"",
         "link \"create account\"",
         "link \"log in\"",
@@ -320,24 +325,12 @@ def _is_page_chrome_link(text: str) -> bool:
             "toggle ",
             "special:",
             "help:",
-            "wikipedia:",
             "category:",
             "file:",
         )
     ):
         return True
-    toc_labels = {
-        "etymology and symbol",
-        "natural history",
-        "composition and structure",
-        "gravity and magnetic field",
-        "moon and orbital space",
-        "orbit and rotation",
-        "atmosphere and climate",
-        "hydrosphere",
-        "biosphere",
-        "human geography",
-        "in culture",
+    generic_section_labels = {
         "see also",
         "notes",
         "references",
@@ -348,7 +341,7 @@ def _is_page_chrome_link(text: str) -> bool:
         "specifications",
         "browser compatibility",
     }
-    return any(text == f'link "{label}"' for label in toc_labels)
+    return any(text == f'link "{label}"' for label in generic_section_labels)
 
 
 def _is_account_link(text: str, href: str) -> bool:
@@ -372,57 +365,48 @@ def _is_language_link(text: str, href: str, current_url: str) -> bool:
     parsed_current = urlparse(current_url)
     if not parsed_href.netloc or not parsed_current.netloc:
         return False
-    return (
-        "wikipedia.org" in parsed_href.netloc
-        and "wikipedia.org" in parsed_current.netloc
-        and parsed_href.netloc != parsed_current.netloc
-    )
+    return _registrable_domain(parsed_href.netloc) == _registrable_domain(
+        parsed_current.netloc
+    ) and parsed_href.netloc != parsed_current.netloc
+
+
+def _registrable_domain(host: str) -> str:
+    parts = [part for part in host.lower().split(".") if part]
+    if len(parts) <= 2:
+        return ".".join(parts)
+    return ".".join(parts[-2:])
 
 
 def _is_navigation_href(href: str) -> bool:
     parsed = urlparse(href)
-    path = unquote(parsed.path).lower()
-    if path.startswith("/w/"):
-        return True
-    if not path.startswith("/wiki/"):
+    path_parts = [
+        part
+        for part in unquote(parsed.path).lower().split("/")
+        if part
+    ]
+    if not path_parts:
         return False
-    page_name = path.removeprefix("/wiki/")
-    return page_name.startswith(
-        (
-            "special:",
-            "help:",
-            "wikipedia:",
-            "file:",
-            "category:",
-            "template:",
-            "portal:",
-            "talk:",
-        )
+    chrome_prefixes = (
+        "account",
+        "admin",
+        "auth",
+        "category",
+        "file",
+        "help",
+        "login",
+        "logout",
+        "portal",
+        "search",
+        "settings",
+        "special",
+        "talk",
+        "template",
+        "user",
     )
-
-
-def _is_taxonomy_link(text: str, href: str) -> bool:
-    haystack = f"{text} {unquote(urlparse(href).path).lower()}"
     return any(
-        marker in haystack
-        for marker in (
-            "taxonomy",
-            "taxon",
-            "species",
-            "genus",
-            "genera",
-            "family_(biology)",
-            "order_(biology)",
-            "class_(biology)",
-            "phylum",
-            "kingdom_(biology)",
-            "actinopterygii",
-            "notothenioidei",
-            "perciformes",
-            "chordata",
-            "animalia",
-            "binomial nomenclature",
-        )
+        part == prefix or part.startswith(f"{prefix}:")
+        for part in path_parts
+        for prefix in chrome_prefixes
     )
 
 
@@ -616,10 +600,10 @@ def _detect_page_type(
 
     if "search" in url_lower or "search" in title_lower:
         return "search_results"
-    if _looks_like_article_page(url, title):
-        return "article"
     if _looks_like_listing_page(url, title, visible_text, clickables):
         return "listing_results"
+    if _looks_like_article_page(url, title):
+        return "article"
     if "password" in text_lower or (
         "sign in" in text_lower and any(elem.element_type == "input" for elem in clickables)
     ):
@@ -725,7 +709,7 @@ def _article_summary_lines(lines: list[str]) -> list[str]:
     after_source_marker = False
     for line in lines:
         lowered = line.lower()
-        if lowered.startswith("from wikipedia") or lowered.startswith("baseline "):
+        if lowered.startswith("from ") or lowered.startswith("baseline "):
             after_source_marker = True
             continue
         if lowered in skip or lowered.startswith("toggle "):

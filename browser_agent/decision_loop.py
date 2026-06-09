@@ -24,7 +24,6 @@ from browser_agent.interpreter import interpret_page
 from browser_agent.interpreter_state import to_dict as interpreter_to_dict
 from browser_agent.logger import append_jsonl, write_run_meta, write_snapshot
 from browser_agent.memory import MemoryStore, _domain_from_url, extract_lessons_from_run
-from browser_agent.password_game import solve_password_game_elements
 from browser_agent.playwright_executor import PlaywrightExecutionError, PlaywrightExecutor
 from browser_agent.planner import ChatPlanner, PlannerConfigurationError, PlannerError
 from browser_agent.prompt_builder import build_page_message, planner_state_debug_payload
@@ -428,31 +427,6 @@ class DecisionLoop:
                             tool_result.tool_name,
                             {"status": "ok", "answer": answer},
                         )
-                    except Exception:  # noqa: BLE001
-                        pass
-                    continue
-
-                # ---- Handle Password Game helper tools ----
-                if tool_result.tool_name == "password_game_elements":
-                    password = tool_result.tool_args.get("password", "")
-                    target = _int_or_default(tool_result.tool_args.get("target"), 200)
-                    helper_result = solve_password_game_elements(password, target=target)
-                    append_jsonl(
-                        self.paths.actions_log,
-                        {
-                            "step": self.step,
-                            "command": "password_game_elements",
-                            "approval_status": "n/a",
-                            "execution_result": "ok",
-                            "current_sum": helper_result.get("current_sum"),
-                            "suggested_suffix": helper_result.get("suggested_suffix"),
-                            "suggested_password": helper_result.get("suggested_password"),
-                            "planner_latency_seconds": tool_result.latency_seconds,
-                        },
-                    )
-                    self.action_history.append("password_game_elements")
-                    try:
-                        self.planner.send_tool_result(tool_result.tool_name, helper_result)
                     except Exception:  # noqa: BLE001
                         pass
                     continue
@@ -1118,13 +1092,6 @@ def _prefer_last_matching_dom_node(element: Any | None) -> bool:
     description = (getattr(element, "description", "") or "").strip().lower()
     child_text = (getattr(element, "child_text", "") or "").strip()
     return bool(child_text) and description in {"generic", "generic [cursor=pointer]"}
-
-
-def _int_or_default(value: str | None, default: int) -> int:
-    try:
-        return int(str(value)) if value is not None else default
-    except ValueError:
-        return default
 
 
 def _hash_text(text: str) -> str:

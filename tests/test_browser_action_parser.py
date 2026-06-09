@@ -47,11 +47,6 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertEqual(action.command, "ask_human")
         self.assertEqual(action.action, "")
 
-    def test_password_game_elements_returns_non_cli_command(self) -> None:
-        action = parse_tool_call("password_game_elements", {"password": "abc"})
-        self.assertEqual(action.command, "password_game_elements")
-        self.assertEqual(action.action, "")
-
     def test_invalid_ref_rejected(self) -> None:
         with self.assertRaises(ActionParseError):
             parse_tool_call("click", {"ref": "invalid"})
