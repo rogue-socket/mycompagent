@@ -44,8 +44,10 @@ def build_system_instruction(
         "- Use 'fill' to enter text into a specific input field. Use 'type' only for the focused element.",
         "- If 'fill' fails, use click(ref) to focus the input first, then type(text) to enter the text.",
         "- Use 'press' for keyboard keys like Enter, Tab, Escape.",
+        "- Use 'format_selection' for rich-text formatting after focusing an editable field and selecting text.",
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
         "  autocomplete dropdowns often cover it and cause timeout errors.",
+        "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
         "- Use 'draw_circle' when a game asks for a freehand circle on a canvas-like surface.",
         "- Use 'ask_human' when a short value visible to the operator, such as CAPTCHA text, is needed to continue.",
         "- Use 'password_game_elements' before editing Password Game Rule 18; the visible input counter is not the element sum.",
@@ -231,6 +233,9 @@ def build_page_message(
         "Previous actions:\n" + ("\n".join(history_lines) if history_lines else "(none)"),
     ]
 
+    if state.dom_evidence:
+        sections.insert(3, "DOM evidence:\n" + state.dom_evidence)
+
     if evidence_snippets:
         evidence_lines = [f"- {snippet}" for snippet in evidence_snippets]
         sections.insert(3, "Task-focused evidence:\n" + "\n".join(evidence_lines))
@@ -317,6 +322,7 @@ def planner_state_debug_payload(
             task or "",
             state.title,
         ),
+        "dom_evidence": state.dom_evidence,
     }
 
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -28,6 +30,7 @@ class InterpreterState:
     clickable_elements: list[ClickableElement]
     visible_text: str
     page_summary: str
+    dom_evidence: str = ""
 
 
 CLICKABLE_KEYWORDS = (
@@ -57,6 +60,9 @@ def interpret_page(
         title=snapshot.title,
     )
     visible_text = _get_visible_text(executor, max_visible_chars)
+    dom_evidence = (
+        _get_dom_evidence(executor) if _supports_dom_evidence(executor) else ""
+    )
     page_type = _detect_page_type(snapshot.url, snapshot.title, visible_text, clickable)
     page_summary = _summarize_page(visible_text, clickable, page_type)
 
@@ -67,6 +73,7 @@ def interpret_page(
         clickable_elements=clickable,
         visible_text=visible_text,
         page_summary=page_summary,
+        dom_evidence=dom_evidence,
     )
 
 
@@ -445,6 +452,130 @@ def _get_visible_text(executor: PlaywrightExecutor, max_chars: int) -> str:
     if len(text) > max_chars:
         return text[:max_chars]
     return text
+
+
+def _supports_dom_evidence(executor: PlaywrightExecutor) -> bool:
+    return bool(
+        getattr(
+            executor,
+            "supports_dom_evidence",
+            executor.__class__ is PlaywrightExecutor,
+        )
+    )
+
+
+def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 2400) -> str:
+    code = """async page => {
+  return await page.evaluate(() => {
+    const textOf = (el, max = 80) => (el.innerText || el.textContent || '')
+      .replace(/\\s+/g, ' ')
+      .trim()
+      .slice(0, max);
+    const attr = (el, name) => el.getAttribute(name) || '';
+    const visible = (el) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return rect.width > 0 && rect.height > 0 &&
+        style.visibility !== 'hidden' && style.display !== 'none';
+    };
+    const clip = (value, max = 180) => String(value || '').slice(0, max);
+    const images = Array.from(document.images)
+      .filter((img) => visible(img) && (img.currentSrc || img.src || img.alt))
+      .slice(0, 20)
+      .map((img) => ({
+        kind: 'image',
+        src: clip(img.currentSrc || img.src, 220),
+        alt: clip(img.alt),
+        title: clip(img.title),
+        aria: clip(attr(img, 'aria-label')),
+        nearby: clip(textOf(img.closest('figure, label, div, section, article') || img.parentElement), 120),
+      }));
+    const links = Array.from(document.querySelectorAll('a[href]'))
+      .filter((link) => visible(link))
+      .slice(0, 25)
+      .map((link) => ({
+        kind: 'link',
+        text: clip(textOf(link), 120),
+        href: clip(link.href, 220),
+        title: clip(link.title),
+      }));
+    const iframes = Array.from(document.querySelectorAll('iframe'))
+      .filter((frame) => visible(frame) && (frame.src || frame.title || attr(frame, 'aria-label')))
+      .slice(0, 10)
+      .map((frame) => ({
+        kind: 'iframe',
+        src: clip(frame.src, 220),
+        title: clip(frame.title),
+        aria: clip(attr(frame, 'aria-label')),
+      }));
+    const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .filter((button) => visible(button))
+      .slice(0, 20)
+      .map((button) => ({
+        kind: 'button',
+        text: clip(textOf(button), 120),
+        aria: clip(attr(button, 'aria-label')),
+        title: clip(button.title),
+        pressed: attr(button, 'aria-pressed'),
+      }));
+    const active = document.activeElement;
+    const activeEditable = active && (
+      active.isContentEditable ||
+      ['INPUT', 'TEXTAREA'].includes(active.tagName) ||
+      attr(active, 'role') === 'textbox'
+    ) ? [{
+      kind: 'active_editable',
+      tag: active.tagName,
+      role: clip(attr(active, 'role')),
+      text: clip(active.value || textOf(active, 240), 240),
+      html: clip(active.innerHTML || '', 300),
+      selection: clip(String(window.getSelection ? window.getSelection() : ''), 240),
+    }] : [];
+    return [...activeEditable, ...images, ...links, ...iframes, ...buttons];
+  });
+}"""
+    result = executor.run("playwright-cli run-code " + shlex.quote(code))
+    items = _extract_json_result(result.stdout)
+    if not isinstance(items, list):
+        return ""
+    lines = _format_dom_evidence(items)
+    evidence = "\n".join(lines)
+    return evidence[:max_chars]
+
+
+def _extract_json_result(output: str) -> Any | None:
+    result_match = re.search(
+        r"^### Result\s*\n(?P<result>.*?)(?=^### |\Z)",
+        output,
+        re.M | re.S,
+    )
+    if not result_match:
+        return None
+    result_text = result_match.group("result").strip()
+    if not result_text:
+        return None
+    try:
+        return json.loads(result_text)
+    except json.JSONDecodeError:
+        return None
+
+
+def _format_dom_evidence(items: list[Any]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "node")
+        fields = [
+            (key, str(value))
+            for key, value in item.items()
+            if key != "kind" and value not in {"", "None", "null"}
+        ]
+        if not fields:
+            continue
+        detail = " ".join(f"{key}={value!r}" for key, value in fields[:5])
+        lines.append(f"- {kind}: {detail}")
+    return lines
 
 
 def _extract_eval_output(output: str) -> str:

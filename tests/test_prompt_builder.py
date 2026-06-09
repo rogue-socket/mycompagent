@@ -78,6 +78,22 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Task-focused evidence:", message)
         self.assertIn("list.append(x) Add an item to the end of the list", message)
 
+    def test_dom_evidence_is_included_in_page_message(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/game",
+            title="Game",
+            page_type="form",
+            clickable_elements=[],
+            visible_text="Visual challenge",
+            page_summary="Visual challenge",
+            dom_evidence="- image: src='https://example.com/captcha.png' alt='captcha'",
+        )
+
+        message = build_page_message(state, action_history=[])
+
+        self.assertIn("DOM evidence:", message)
+        self.assertIn("captcha.png", message)
+
     def test_wikipedia_redirect_note_marks_canonical_target(self) -> None:
         state = InterpreterState(
             url="https://en.wikipedia.org/wiki/Hip-hop",

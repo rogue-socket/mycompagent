@@ -74,6 +74,12 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertIn("requestedRadius = 180", action.action)
         self.assertIn("steps = 24", action.action)
 
+    def test_format_selection_maps_to_exec_command(self) -> None:
+        action = parse_tool_call("format_selection", {"format": "bold"})
+        self.assertEqual(action.command, "run-code")
+        self.assertIn("execCommand", action.action)
+        self.assertIn("bold", action.action)
+
     def test_drag_rejects_bad_ref(self) -> None:
         with self.assertRaises(ActionParseError):
             parse_tool_call("drag", {"source_ref": "e1", "target_ref": "bad"})

@@ -49,6 +49,7 @@ Allowed tool names and arguments:
 - fill/select: {"ref": "e12", "value": "text"}
 - type: {"text": "text"}
 - press: {"key": "Enter"}
+- format_selection: {"format": "bold"} after focusing an editable area and selecting text
 - scroll: {"dy": "900"} to scroll down, {"dy": "-900"} to scroll up
 - drag: {"source_ref": "e1", "target_ref": "e2"}
 - draw_circle: {"radius": "170", "steps": "24"} for freehand circle drawing games
@@ -67,7 +68,9 @@ Rules:
 - Use only element refs from the current page state.
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
 - Use ask_human when a short missing value visible to the operator is needed to continue, such as CAPTCHA text.
+- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.
 - Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
+- Use format_selection for rich-text formatting on selected editable text instead of clicking toolbar buttons when possible.
 - Use password_game_elements before editing Password Game Rule 18; do not infer the atomic sum from the input length counter.
 - If password_game_elements returns suggested_password, fill the password input with suggested_password exactly.
 - In Password Game runs, preserve confirmed rule-bearing substrings such as CAPTCHA text, Wordle answers, chess moves, country names, sponsor names, roman numerals, the moon emoji, and Paul's egg. When adjusting digit sums, edit padding digits or leap-year choices instead of changing those substrings.

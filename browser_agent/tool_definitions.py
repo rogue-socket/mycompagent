@@ -7,6 +7,7 @@ returns typed function calls instead of free-form text.
 from __future__ import annotations
 
 import shlex
+import re
 
 from google.genai import types
 
@@ -81,6 +82,23 @@ _TOOLS: list[types.FunctionDeclaration] = [
                 "key": types.Schema(type="STRING", description="Key name (e.g. Enter, Tab, Escape, ArrowDown, Backspace)"),
             },
             required=["key"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="format_selection",
+        description=(
+            "Apply rich-text formatting to the current selection in the focused "
+            "editable field. Focus the editor and select text first."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "format": types.Schema(
+                    type="STRING",
+                    description="Formatting command, such as bold, italic, underline, or strikeThrough.",
+                ),
+            },
+            required=["format"],
         ),
     ),
     types.FunctionDeclaration(
@@ -363,6 +381,8 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
         return None
     if name == "draw_circle":
         return _draw_circle_command(args)
+    if name == "format_selection":
+        return _format_selection_command(args)
 
     cli_name = _CLI_NAME_MAP.get(name, name)
     parts = ["playwright-cli", cli_name]
@@ -459,6 +479,33 @@ def _draw_circle_command(args: dict[str, str]) -> str:
   return `Drew circle at ${{Math.round(target.cx)}},${{Math.round(target.cy)}} radius ${{Math.round(target.radius)}}`;
 }}"""
     return "playwright-cli run-code " + shlex.quote(code)
+
+
+def _format_selection_command(args: dict[str, str]) -> str:
+    command = _format_command(args.get("format", "bold"))
+    code = f"""async page => {{
+  const command = {command!r};
+  const active = await page.evaluate((command) => {{
+    const before = String(window.getSelection ? window.getSelection() : '');
+    const ok = document.execCommand(command, false, null);
+    const active = document.activeElement;
+    const html = active && active.innerHTML ? active.innerHTML.slice(0, 500) : '';
+    return {{ ok, selectedText: before.slice(0, 200), activeTag: active ? active.tagName : '', html }};
+  }}, command);
+  return active;
+}}"""
+    return "playwright-cli run-code " + shlex.quote(code)
+
+
+def _format_command(value: str | None) -> str:
+    normalized = re.sub(r"[^A-Za-z]", "", str(value or "")).lower()
+    allowed = {
+        "bold": "bold",
+        "italic": "italic",
+        "underline": "underline",
+        "strikethrough": "strikeThrough",
+    }
+    return allowed.get(normalized, "bold")
 
 
 def _int_arg(value: str | None, *, default: int, minimum: int, maximum: int) -> int:

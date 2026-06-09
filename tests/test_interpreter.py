@@ -1,3 +1,4 @@
+import json
 import unittest
 
 from browser_agent.interpreter import _extract_eval_output, interpret_page
@@ -6,18 +7,27 @@ from browser_agent.snapshot_parser import SnapshotState, ElementRef
 
 
 class DummyExecutor(PlaywrightExecutor):
-    def __init__(self, visible_text: str | None = None) -> None:
+    def __init__(
+        self,
+        visible_text: str | None = None,
+        dom_items: list[dict[str, str]] | None = None,
+    ) -> None:
         super().__init__(session=None, use_npx=False)
         self.visible_text = visible_text or "Visible text line 1\nVisible text line 2"
+        self.dom_items = dom_items
+        self.supports_dom_evidence = dom_items is not None
 
     def run(self, command: str, timeout: float = 45.0):
-        visible_text = self.visible_text
+        if "run-code" in command and self.dom_items is not None:
+            stdout = "### Result\n" + json.dumps(self.dom_items)
+        else:
+            stdout = self.visible_text
 
         class Result:
             def __init__(self) -> None:
                 self.command = command
                 self.returncode = 0
-                self.stdout = visible_text
+                self.stdout = stdout
                 self.stderr = ""
         return Result()
 
@@ -34,6 +44,37 @@ class InterpreterTests(unittest.TestCase):
         self.assertEqual(state.page_type, "search_results")
         self.assertTrue(state.clickable_elements)
         self.assertTrue(state.visible_text)
+
+    def test_interpret_page_includes_generic_dom_evidence(self) -> None:
+        snapshot = SnapshotState(
+            url="https://example.com/game",
+            title="Game",
+            elements=[],
+            raw_text="",
+        )
+
+        state = interpret_page(
+            snapshot,
+            DummyExecutor(
+                dom_items=[
+                    {
+                        "kind": "image",
+                        "src": "https://example.com/assets/challenge.png",
+                        "alt": "challenge",
+                    },
+                    {
+                        "kind": "active_editable",
+                        "tag": "DIV",
+                        "html": "<strong>abc</strong>",
+                    },
+                ]
+            ),
+            max_clickables=10,
+        )
+
+        self.assertIn("challenge.png", state.dom_evidence)
+        self.assertIn("active_editable", state.dom_evidence)
+        self.assertIn("<strong>abc</strong>", state.dom_evidence)
 
     def test_aria_options_are_exposed_as_clickable_targets(self) -> None:
         snapshot = SnapshotState(
