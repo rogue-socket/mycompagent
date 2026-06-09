@@ -92,10 +92,18 @@ class AriaComboboxExecutor:
 
 
 def _workflow_snapshot(lines: list[str]) -> str:
+    return _snapshot_for_url(
+        "http://127.0.0.1:8766/workflow-b.html",
+        "Workflow B - Priority Console",
+        lines,
+    )
+
+
+def _snapshot_for_url(url: str, title: str, lines: list[str]) -> str:
     body = "\n".join(f"  - {line}" for line in lines)
     return (
-        "Page URL: http://127.0.0.1:8766/workflow-b.html\n"
-        "Page Title: Workflow B - Priority Console\n"
+        f"Page URL: {url}\n"
+        f"Page Title: {title}\n"
         "Snapshot\n"
         f"{body}\n"
     )
@@ -590,6 +598,92 @@ class SnapshotTimeoutRecoveryPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class StatefulTaskNavigationGuardExecutor:
+    def __init__(self) -> None:
+        self.current_tab = 0
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            self.current_tab = 0
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command == "playwright-cli tab-new":
+            self.current_tab = 1
+            return CommandResult(command, 0, "### Result\n- 0: [Task](https://example.com/task)\n- 1: (current) [](about:blank)", "")
+        if command == "playwright-cli goto https://lookup.example/data":
+            self.current_tab = 1
+            return CommandResult(command, 0, "Loaded lookup data", "")
+        if command == "playwright-cli tab-select 0":
+            self.current_tab = 0
+            return CommandResult(command, 0, "### Result\n- 0: (current) [Task](https://example.com/task)\n- 1: [](https://lookup.example/data)", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        if self.current_tab == 1:
+            return CommandResult(
+                "playwright-cli snapshot",
+                0,
+                _snapshot_for_url(
+                    "https://lookup.example/data",
+                    "Lookup",
+                    ['text "Lookup value: alpha"'],
+                ),
+                "",
+            )
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                ['textbox "Answer" : "in-progress" [ref=e15]'],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        if self.current_tab == 1:
+            return "Lookup value: alpha"
+        return "Task form\nAnswer\nin-progress"
+
+
+class StatefulTaskNavigationGuardPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool("tab_new", {}, "Open a lookup tab.")
+        if step == 2:
+            return _tool("goto", {"url": "https://lookup.example/data"}, "Load lookup data.")
+        if step == 3:
+            return _tool("tab_select", {"index": "0"}, "Return to the task form.")
+        if step == 4:
+            return _tool(
+                "goto",
+                {"url": "https://lookup.example/other"},
+                "Incorrectly try another lookup on the task tab.",
+            )
+        if step == 5:
+            self.testcase.assertIn("Stateful task-tab navigation guard", message)
+            self.testcase.assertIn("Switch to an existing lookup tab", message)
+            return _tool(
+                "finish",
+                {"reason": "The risky navigation was rejected."},
+                "Guard behavior verified.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -602,6 +696,40 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_stateful_task_tab_rejects_cross_site_lookup_goto(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = StatefulTaskNavigationGuardPlanner(self)
+            executor = StatefulTaskNavigationGuardExecutor()
+            loop = DecisionLoop(
+                task="Complete the stateful task form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 6, "max_errors": 2, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn(
+                "playwright-cli goto https://lookup.example/other",
+                executor.commands,
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[3]["execution_result"], "skipped")
+            self.assertEqual(
+                actions[3]["reason"],
+                "stateful_task_tab_lookup_navigation",
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
     def test_snapshot_timeout_after_failed_navigation_goes_back_and_continues(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

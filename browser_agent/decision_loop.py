@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from browser_agent.action_parser import ActionParseError, parse_tool_call
 from browser_agent.approval_system import ask_approval, requires_approval
@@ -523,6 +524,28 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                risky_navigation = self._stateful_task_tab_navigation_warning(
+                    parsed_action,
+                    interpreter_state,
+                )
+                if risky_navigation:
+                    self.last_step_error = risky_navigation
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "stateful_task_tab_lookup_navigation",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 # ---- Approval ----
                 approved = True
                 if requires_approval(self.mode, parsed_action, snapshot_state.elements):
@@ -833,6 +856,46 @@ class DecisionLoop:
 
         self.errors += 1
         return False
+
+    def _stateful_task_tab_navigation_warning(
+        self,
+        parsed_action: Any,
+        interpreter_state: Any,
+    ) -> str:
+        if parsed_action.command != "goto" or not parsed_action.args:
+            return ""
+        if not self.open_url or not _same_location(interpreter_state.url, self.open_url):
+            return ""
+        if not _is_cross_site_navigation(interpreter_state.url, parsed_action.args[0]):
+            return ""
+        if not self._has_stateful_task_controls(interpreter_state):
+            return ""
+        if not self._recent_lookup_workflow():
+            return ""
+        return (
+            "Stateful task-tab navigation guard: the browser is back on the original "
+            "task page with active form/editable state. Do not use goto here for more "
+            "lookup because it can discard task progress. Switch to an existing lookup "
+            "tab or open a new blank tab, load the lookup URL there, extract the value, "
+            "then return to this task tab before editing visible task controls."
+        )
+
+    def _has_stateful_task_controls(self, interpreter_state: Any) -> bool:
+        if "active_editable" in (getattr(interpreter_state, "dom_evidence", "") or ""):
+            return True
+        return any(
+            getattr(element, "element_type", "") == "input"
+            for element in getattr(interpreter_state, "clickable_elements", [])
+        )
+
+    def _recent_lookup_workflow(self) -> bool:
+        recent = self.action_history[-10:]
+        has_tab_action = any(
+            action.startswith(("playwright-cli tab-new", "playwright-cli tab-select"))
+            for action in recent
+        )
+        has_navigation = any(action.startswith("playwright-cli goto ") for action in recent)
+        return has_tab_action and has_navigation
 
     def _human_input_allowed(self) -> bool:
         return bool(self.config.get("allow_human_input", self.mode != "auto"))
@@ -1152,6 +1215,32 @@ def _prefer_last_matching_dom_node(element: Any | None) -> bool:
     description = (getattr(element, "description", "") or "").strip().lower()
     child_text = (getattr(element, "child_text", "") or "").strip()
     return bool(child_text) and description in {"generic", "generic [cursor=pointer]"}
+
+
+def _same_location(current_url: str, expected_url: str) -> bool:
+    current = urlparse(current_url or "")
+    expected = urlparse(expected_url or "")
+    return (
+        current.scheme in {"http", "https"}
+        and expected.scheme in {"http", "https"}
+        and current.netloc == expected.netloc
+        and _normalized_path(current.path) == _normalized_path(expected.path)
+    )
+
+
+def _is_cross_site_navigation(current_url: str, target_url: str) -> bool:
+    current = urlparse(current_url or "")
+    target = urlparse(target_url or "")
+    if current.scheme not in {"http", "https"}:
+        return False
+    if target.scheme not in {"http", "https"}:
+        return False
+    return bool(target.netloc and current.netloc != target.netloc)
+
+
+def _normalized_path(path: str) -> str:
+    cleaned = path or "/"
+    return cleaned.rstrip("/") or "/"
 
 
 def _hash_text(text: str) -> str:

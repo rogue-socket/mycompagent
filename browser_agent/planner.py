@@ -71,6 +71,7 @@ Rules:
 - For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints; make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.
 - If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human; reserve ask_human for operator-only visual/private values.
 - A new tab opens blank. If you need a lookup URL, call tab_new, then call goto in that current blank tab. Stay there until you have loaded and extracted the lookup result.
+- When the original task page has active form/editable state, do not use goto on that tab for more lookup. Switch to an existing lookup tab or open a new blank tab, then return to the task tab only to edit visible task controls.
 - After a lookup result is loaded and the needed value is extracted, switch back to the original task tab before using task-page element refs or filling task-page controls.
 - For iframe-only visual clues, inspect iframe src/title/nearby DOM evidence and use public lookup when possible; do not use frame-scoped refs as normal element refs unless they are listed as current clickable elements.
 - Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
