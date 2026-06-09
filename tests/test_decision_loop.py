@@ -183,6 +183,53 @@ class InterstitialWaitPlanner:
         pass
 
 
+class PersistentInterstitialExecutor(TransientInterstitialExecutor):
+    def snapshot(self) -> CommandResult:
+        self.snapshot_count += 1
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Just a moment...",
+                ['text "Checking your browser before accessing the site."'],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        return "Just a moment...\nChecking your browser before accessing the site."
+
+
+class InterstitialReloadPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            self.testcase.assertIn("Just a moment", message)
+            return _tool(
+                "reload",
+                {},
+                "Try reloading the still-visible interstitial.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Transient interstitial reload guard", message)
+            self.testcase.assertIn("finish with a precise blocked reason", message)
+            return _tool(
+                "finish",
+                {"reason": "Persistent interstitial reload was rejected."},
+                "The reload guard supplied a better recovery hint.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 class AriaComboboxPlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
@@ -2038,6 +2085,41 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[0]["command"], "auto-wait interstitial")
             self.assertEqual(actions[0]["reason"], "transient_interstitial")
             self.assertEqual(actions[1]["command"], "auto-wait interstitial")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_reload_on_persistent_interstitial_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = InterstitialReloadPlanner(self)
+            executor = PersistentInterstitialExecutor()
+            loop = DecisionLoop(
+                task="Complete the task once the page is ready.",
+                mode="auto",
+                planner=planner,
+                config={
+                    "max_steps": 5,
+                    "max_errors": 1,
+                    "min_visible_text": 0,
+                    "interstitial_wait_seconds": 0,
+                    "max_interstitial_waits": 1,
+                },
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli reload", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "auto-wait interstitial")
+            self.assertEqual(actions[1]["execution_result"], "skipped")
+            self.assertEqual(actions[1]["reason"], "transient_interstitial_reload")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_recent_failed_url_host_retries_are_skipped(self) -> None:

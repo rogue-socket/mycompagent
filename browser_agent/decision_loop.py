@@ -909,6 +909,27 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                interstitial_reload = _interstitial_reload_warning(
+                    parsed_action,
+                    interpreter_state,
+                )
+                if interstitial_reload:
+                    self.last_step_error = interstitial_reload
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "transient_interstitial_reload",
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 missing_text_target = self._ungrounded_text_input_warning(
                     parsed_action,
                     interpreter_state,
@@ -2128,6 +2149,20 @@ def _transient_interstitial_warning(interpreter_state: Any) -> str:
             "settle instead of repeatedly reloading or spending planner calls."
         )
     return ""
+
+
+def _interstitial_reload_warning(parsed_action: Any, interpreter_state: Any) -> str:
+    if parsed_action.command != "reload":
+        return ""
+    if not _transient_interstitial_warning(interpreter_state):
+        return ""
+    return (
+        "Transient interstitial reload guard: the current page still looks like a "
+        "temporary loading or verification interstitial. Reloading usually restarts "
+        "the challenge and wastes a browser action. Wait for the page to settle, use "
+        "a non-reload readiness check, or finish with a precise blocked reason if the "
+        "interstitial does not clear."
+    )
 
 
 def _source_token_human_input_warning(
