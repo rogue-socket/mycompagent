@@ -2222,6 +2222,140 @@ class StatusRegressionPlanner:
         pass
 
 
+class ProtectedFragmentExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.value = "base"
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n{json.dumps(self._visible_text())}",
+                "",
+            )
+        if command.startswith("playwright-cli run-code "):
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n{json.dumps(self._dom_items())}",
+                "",
+            )
+        if command == "playwright-cli fill e15 baseX":
+            self.value = "baseX"
+            return CommandResult(command, 0, "Filled", "")
+        if command == "playwright-cli fill e15 baseY":
+            self.value = "baseY"
+            return CommandResult(command, 0, "Filled", "")
+        if command == "playwright-cli fill e15 baseXY":
+            self.value = "baseXY"
+            return CommandResult(command, 0, "Filled", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [
+                    f'textbox "Value" : "{self.value}" [ref=e15]',
+                    'text "Requirement A has the base value."',
+                    'text "Requirement B has the confirmed addition."',
+                    'text "Requirement C has the final addition."',
+                ],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        return (
+            "Requirement A has the base value.\n"
+            "Requirement B has the confirmed addition.\n"
+            "Requirement C has the final addition."
+        )
+
+    def _dom_items(self) -> list[dict[str, str]]:
+        if self.value == "baseX":
+            statuses = [
+                ("success", "Requirement A has the base value."),
+                ("success", "Requirement B has the confirmed addition."),
+                ("error", "Requirement C has the final addition."),
+            ]
+        elif self.value == "baseXY":
+            statuses = [
+                ("success", "Requirement A has the base value."),
+                ("success", "Requirement B has the confirmed addition."),
+                ("success", "Requirement C has the final addition."),
+            ]
+        else:
+            statuses = [
+                ("success", "Requirement A has the base value."),
+                ("error", "Requirement B has the confirmed addition."),
+                ("error", "Requirement C has the final addition."),
+            ]
+        items = [
+            {
+                "kind": "active_editable",
+                "tag": "INPUT",
+                "role": "textbox",
+                "text": self.value,
+            }
+        ]
+        items.extend(
+            {
+                "kind": "status",
+                "status": status,
+                "nearby": label,
+            }
+            for status, label in statuses
+        )
+        return items
+
+
+class ProtectedFragmentPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "Add the fragment that satisfies the currently failing requirement.",
+            )
+        if step == 2:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseY"},
+                "Try replacing the confirmed fragment while targeting the next requirement.",
+            )
+        if step == 3:
+            self.testcase.assertIn("Protected fragment guard", message)
+            self.testcase.assertIn("previously confirmed value fragment", message)
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseXY"},
+                "Preserve the confirmed fragment and add only the missing part.",
+            )
+        if step == 4:
+            return _tool("finish", {"reason": "All requirements accepted."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        pass
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -2604,6 +2738,40 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[0]["execution_result"], "ok")
             self.assertEqual(actions[1]["command"], "playwright-cli fill e15 baseY")
             self.assertEqual(actions[1]["execution_result"], "ok")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_fill_removing_confirmed_fragment_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = ProtectedFragmentPlanner(self)
+            executor = ProtectedFragmentExecutor()
+            loop = DecisionLoop(
+                task="Complete a multi-requirement stateful form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 5, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertIn("playwright-cli fill e15 baseX", executor.commands)
+            self.assertNotIn("playwright-cli fill e15 baseY", executor.commands)
+            self.assertIn("playwright-cli fill e15 baseXY", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "playwright-cli fill e15 baseX")
+            self.assertEqual(actions[0]["execution_result"], "ok")
+            self.assertEqual(actions[1]["execution_result"], "skipped")
+            self.assertEqual(actions[1]["reason"], "protected_fragment_removed")
+            self.assertEqual(actions[2]["command"], "playwright-cli fill e15 baseXY")
+            self.assertEqual(actions[2]["execution_result"], "ok")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_fetch_url_returns_text_without_browser_navigation(self) -> None:

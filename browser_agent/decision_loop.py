@@ -57,6 +57,12 @@ class SuccessfulFetchAttempt:
     truncated: bool
 
 
+@dataclass(slots=True)
+class ProtectedValueFragment:
+    status_label: str
+    fragment: str
+
+
 class DecisionLoop:
     """Coordinates snapshot, planning, approvals, and execution."""
 
@@ -113,6 +119,7 @@ class DecisionLoop:
         self.successful_fetch_attempts: list[SuccessfulFetchAttempt] = []
         self.recent_text_asset_urls: list[str] = []
         self.unavailable_human_input_questions: set[str] = set()
+        self.protected_value_fragments: list[ProtectedValueFragment] = []
 
     def run(self) -> RunResult:
         start = time.monotonic()
@@ -294,6 +301,14 @@ class DecisionLoop:
                 status_regression_warning = _status_regression_warning(
                     self.last_status_indicators,
                     current_status_indicators,
+                    self.last_action_ok,
+                )
+                self.protected_value_fragments = _updated_protected_value_fragments(
+                    self.protected_value_fragments,
+                    self.last_status_indicators,
+                    current_status_indicators,
+                    self.last_active_editable_text,
+                    current_active_editable_text,
                     self.last_action_ok,
                 )
                 self.last_status_indicators = current_status_indicators
@@ -866,6 +881,31 @@ class DecisionLoop:
                             "approval_status": "n/a",
                             "execution_result": "skipped",
                             "reason": "ref_not_in_current_snapshot",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
+                protected_fragment_warning = _protected_fragment_fill_warning(
+                    parsed_action,
+                    snapshot_state.elements,
+                    getattr(interpreter_state, "dom_evidence", "") or "",
+                    self.protected_value_fragments,
+                    self.last_status_indicators,
+                )
+                if protected_fragment_warning:
+                    self.last_step_error = protected_fragment_warning
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "protected_fragment_removed",
                             "current_url": interpreter_state.url,
                             "planner_latency_seconds": tool_result.latency_seconds,
                         },
@@ -1977,6 +2017,52 @@ def _same_value_fill_warning(
     )
 
 
+def _protected_fragment_fill_warning(
+    parsed_action: Any,
+    elements: list[Any],
+    dom_evidence: str,
+    protected_fragments: list[ProtectedValueFragment],
+    current_statuses: dict[str, str],
+) -> str:
+    if parsed_action.command != "fill" or len(parsed_action.args) < 2:
+        return ""
+    if not protected_fragments or len(current_statuses) < 2:
+        return ""
+    target = _element_by_ref(elements, parsed_action.args[0])
+    if target is None:
+        return ""
+    current_value = _editable_value_from_element(target)
+    if current_value is None and _element_is_active(target):
+        current_value = _active_editable_text_from_dom_evidence(dom_evidence)
+    if current_value is None:
+        return ""
+    intended_value = _normalize_observed_value(str(parsed_action.args[1]))
+    if not intended_value or intended_value == current_value:
+        return ""
+
+    missing: list[ProtectedValueFragment] = []
+    for protected in protected_fragments:
+        if current_statuses.get(protected.status_label) != "success":
+            continue
+        if protected.fragment not in current_value:
+            continue
+        if protected.fragment not in intended_value:
+            missing.append(protected)
+    if not missing:
+        return ""
+
+    examples = "; ".join(
+        f"{item.fragment!r} for {item.status_label}" for item in missing[:3]
+    )
+    return (
+        "Protected fragment guard: this fill would remove previously confirmed "
+        f"value fragment(s): {examples}. Those fragments appeared when visible "
+        "requirements became satisfied and their statuses are still satisfied. "
+        "Preserve them while adding or changing only the part needed for the "
+        "currently failing requirement, then verify the status indicators."
+    )
+
+
 def _rich_text_plain_fill_warning(
     parsed_action: Any,
     elements: list[Any],
@@ -2178,6 +2264,97 @@ def _quoted_dom_field(line: str, field: str) -> str:
 
 def _normalize_observed_value(value: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(value or "")).strip()[:240]
+
+
+def _updated_protected_value_fragments(
+    previous_fragments: list[ProtectedValueFragment],
+    previous_statuses: dict[str, str],
+    current_statuses: dict[str, str],
+    previous_value: str | None,
+    current_value: str | None,
+    last_action_ok: bool,
+) -> list[ProtectedValueFragment]:
+    retained: list[ProtectedValueFragment] = []
+    seen: set[tuple[str, str]] = set()
+    for protected in previous_fragments:
+        if current_statuses.get(protected.status_label) != "success":
+            continue
+        if current_value is None or protected.fragment not in current_value:
+            continue
+        key = (protected.status_label, protected.fragment)
+        if key in seen:
+            continue
+        seen.add(key)
+        retained.append(protected)
+
+    if (
+        not last_action_ok
+        or previous_value is None
+        or current_value is None
+        or previous_value == current_value
+    ):
+        return retained
+
+    fragment = _changed_value_fragment(previous_value, current_value)
+    if not _protectable_value_fragment(fragment, current_value):
+        return retained
+
+    newly_satisfied = _status_transition_labels(
+        previous_statuses,
+        current_statuses,
+        from_status="error",
+        to_status="success",
+    )
+    regressed = _status_transition_labels(
+        previous_statuses,
+        current_statuses,
+        from_status="success",
+        to_status="error",
+    )
+    if regressed:
+        return retained
+    for label in newly_satisfied:
+        key = (label, fragment)
+        if key in seen:
+            continue
+        seen.add(key)
+        retained.append(ProtectedValueFragment(status_label=label, fragment=fragment))
+    return retained[:20]
+
+
+def _changed_value_fragment(previous_value: str, current_value: str) -> str:
+    prefix_len = 0
+    max_prefix = min(len(previous_value), len(current_value))
+    while (
+        prefix_len < max_prefix
+        and previous_value[prefix_len] == current_value[prefix_len]
+    ):
+        prefix_len += 1
+
+    suffix_len = 0
+    previous_remaining = len(previous_value) - prefix_len
+    current_remaining = len(current_value) - prefix_len
+    while (
+        suffix_len < previous_remaining
+        and suffix_len < current_remaining
+        and previous_value[len(previous_value) - 1 - suffix_len]
+        == current_value[len(current_value) - 1 - suffix_len]
+    ):
+        suffix_len += 1
+
+    end = len(current_value) - suffix_len if suffix_len else len(current_value)
+    return current_value[prefix_len:end]
+
+
+def _protectable_value_fragment(fragment: str, current_value: str) -> bool:
+    normalized = _normalize_observed_value(fragment)
+    if not normalized or normalized != fragment.strip():
+        return False
+    if len(normalized) > 64:
+        return False
+    if len(normalized) == len(current_value) and len(current_value) > 16:
+        return False
+    return True
 
 
 def _post_action_observation_note(
