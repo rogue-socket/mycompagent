@@ -157,6 +157,7 @@ def build_page_message(
     action_history: list[str],
     max_elements: int = 60,
     last_error: str | None = None,
+    last_observation: str | None = None,
     domain_context: str | None = None,
     task: str | None = None,
     evidence_text: str | None = None,
@@ -278,6 +279,9 @@ def build_page_message(
         if recovery_note:
             sections.append("Custom control recovery:\n" + recovery_note)
         sections.append(f"IMPORTANT - Last action failed:\n{last_error}\nTry a different approach.")
+
+    if last_observation:
+        sections.append(f"Observed change after last successful action:\n{last_observation}")
 
     if domain_context:
         sections.append(f"Tips for this site:\n{domain_context}")

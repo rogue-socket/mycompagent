@@ -1348,14 +1348,24 @@ class StatusRegressionExecutor:
                 ("success", "Requirement A has a stable token."),
                 ("error", "Requirement B has the new token."),
             ]
-        return [
+        items = [
+            {
+                "kind": "active_editable",
+                "tag": "DIV",
+                "role": "textbox",
+                "text": self.value,
+                "html": f"<p>{self.value}</p>",
+            }
+        ]
+        items.extend(
             {
                 "kind": "status",
                 "status": status,
                 "nearby": label,
             }
             for status, label in statuses
-        ]
+        )
+        return items
 
 
 class StatusRegressionPlanner:
@@ -1376,6 +1386,22 @@ class StatusRegressionPlanner:
             self.testcase.assertIn("Status regression guard", message)
             self.testcase.assertIn("previously satisfied but are now failing", message)
             self.testcase.assertIn("Requirement A has a stable token.", message)
+            self.testcase.assertIn(
+                "Observed change after last successful action:",
+                message,
+            )
+            self.testcase.assertIn(
+                "Editable value changed from 'base' to 'baseX'.",
+                message,
+            )
+            self.testcase.assertIn(
+                "Newly satisfied statuses: Requirement B has the new token.",
+                message,
+            )
+            self.testcase.assertIn(
+                "Regressed statuses: Requirement A has a stable token.",
+                message,
+            )
             return _tool(
                 "fill",
                 {"ref": "e15", "value": "baseY"},
@@ -1383,6 +1409,14 @@ class StatusRegressionPlanner:
             )
         if step == 3:
             self.testcase.assertIn("All requirements accepted.", message)
+            self.testcase.assertIn(
+                "Editable value changed from 'baseX' to 'baseY'.",
+                message,
+            )
+            self.testcase.assertIn(
+                "Newly satisfied statuses: Requirement A has a stable token.",
+                message,
+            )
             return _tool(
                 "finish",
                 {"reason": "All requirements accepted."},

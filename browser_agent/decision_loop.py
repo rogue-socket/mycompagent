@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import html
 import json
@@ -89,6 +90,8 @@ class DecisionLoop:
         self.consecutive_planner_failures = 0
         self.last_action_ok = False
         self.last_status_indicators: dict[str, str] = {}
+        self.last_active_editable_text: str | None = None
+        self.last_observation: str | None = None
         self.short_text_retries = 0
         self.interstitial_wait_retries = 0
         self.last_step_error: str | None = None
@@ -264,8 +267,18 @@ class DecisionLoop:
                 else:
                     self.interstitial_wait_retries = 0
 
+                current_active_editable_text = _active_editable_text_from_dom_evidence(
+                    interpreter_state.dom_evidence
+                )
                 current_status_indicators = _status_indicators_from_dom_evidence(
                     interpreter_state.dom_evidence
+                )
+                self.last_observation = _post_action_observation_note(
+                    self.last_status_indicators,
+                    current_status_indicators,
+                    self.last_active_editable_text,
+                    current_active_editable_text,
+                    self.last_action_ok,
                 )
                 status_regression_warning = _status_regression_warning(
                     self.last_status_indicators,
@@ -273,6 +286,7 @@ class DecisionLoop:
                     self.last_action_ok,
                 )
                 self.last_status_indicators = current_status_indicators
+                self.last_active_editable_text = current_active_editable_text
                 if status_regression_warning:
                     self.last_step_error = (
                         f"{self.last_step_error}\n\n{status_regression_warning}"
@@ -302,12 +316,14 @@ class DecisionLoop:
                     self.action_history,
                     max_elements=max_elements,
                     last_error=self.last_step_error,
+                    last_observation=self.last_observation,
                     domain_context=self._domain_context,
                     task=self.task,
                     evidence_text=snapshot_state.raw_text,
                     task_context=task_context,
                 )
                 self.last_step_error = None
+                self.last_observation = None
                 self._log(f"Step {self.step}: message length={len(message)} chars")
                 planner_debug_payload = (
                     self._planner_state_debug_payload(
@@ -1577,20 +1593,111 @@ def _has_unresolved_status(interpreter_state: Any) -> bool:
 def _status_indicators_from_dom_evidence(dom_evidence: str) -> dict[str, str]:
     indicators: dict[str, str] = {}
     for line in (dom_evidence or "").splitlines():
-        match = re.search(
-            r"\bstatus='(success|error)'.*nearby='([^']+)'",
-            line,
-        )
-        if not match:
+        status = _quoted_dom_field(line, "status")
+        if status not in {"success", "error"}:
             continue
-        label = _normalize_status_label(match.group(2))
+        label = _normalize_status_label(_quoted_dom_field(line, "nearby"))
         if label:
-            indicators[label] = match.group(1)
+            indicators[label] = status
     return indicators
 
 
 def _normalize_status_label(label: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(label or "")).strip()[:240]
+
+
+def _active_editable_text_from_dom_evidence(dom_evidence: str) -> str | None:
+    for line in (dom_evidence or "").splitlines():
+        if "active_editable:" not in line:
+            continue
+        text = _quoted_dom_field(line, "text")
+        if text:
+            return _normalize_observed_value(text)
+    return None
+
+
+def _quoted_dom_field(line: str, field: str) -> str:
+    match = re.search(
+        rf"\b{re.escape(field)}=('(?:[^'\\]|\\.)*')",
+        line or "",
+    )
+    if not match:
+        return ""
+    raw_value = match.group(1)
+    try:
+        return str(ast.literal_eval(raw_value))
+    except (SyntaxError, ValueError):
+        return raw_value[1:-1]
+
+
+def _normalize_observed_value(value: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(value or "")).strip()[:240]
+
+
+def _post_action_observation_note(
+    previous_statuses: dict[str, str],
+    current_statuses: dict[str, str],
+    previous_value: str | None,
+    current_value: str | None,
+    last_action_ok: bool,
+) -> str:
+    if not last_action_ok:
+        return ""
+
+    lines: list[str] = []
+    if previous_value is not None and current_value is not None:
+        if previous_value != current_value:
+            lines.append(
+                "Editable value changed from "
+                f"{previous_value!r} to {current_value!r}."
+            )
+
+    newly_satisfied = _status_transition_labels(
+        previous_statuses,
+        current_statuses,
+        from_status="error",
+        to_status="success",
+    )
+    regressed = _status_transition_labels(
+        previous_statuses,
+        current_statuses,
+        from_status="success",
+        to_status="error",
+    )
+    newly_visible_failing = [
+        label
+        for label, status in current_statuses.items()
+        if status == "error" and label not in previous_statuses
+    ]
+
+    if newly_satisfied:
+        lines.append("Newly satisfied statuses: " + "; ".join(newly_satisfied[:5]) + ".")
+    if regressed:
+        lines.append("Regressed statuses: " + "; ".join(regressed[:5]) + ".")
+    if newly_visible_failing:
+        lines.append(
+            "Newly visible failing statuses: "
+            + "; ".join(newly_visible_failing[:5])
+            + "."
+        )
+
+    if not lines:
+        return ""
+    return "\n".join(f"- {line}" for line in lines)
+
+
+def _status_transition_labels(
+    previous: dict[str, str],
+    current: dict[str, str],
+    *,
+    from_status: str,
+    to_status: str,
+) -> list[str]:
+    return [
+        label
+        for label, previous_status in previous.items()
+        if previous_status == from_status and current.get(label) == to_status
+    ]
 
 
 def _status_regression_warning(

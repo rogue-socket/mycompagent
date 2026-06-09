@@ -121,6 +121,26 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("DOM evidence:", message)
         self.assertIn("captcha.png", message)
 
+    def test_last_observation_is_included_without_failure_language(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/form",
+            title="Form",
+            page_type="form",
+            clickable_elements=[],
+            visible_text="Requirement B is valid.",
+            page_summary="Requirement form.",
+        )
+
+        message = build_page_message(
+            state,
+            action_history=["playwright-cli fill e1 value"],
+            last_observation="- Newly satisfied statuses: Requirement B is valid.",
+        )
+
+        self.assertIn("Observed change after last successful action:", message)
+        self.assertIn("Requirement B is valid.", message)
+        self.assertNotIn("IMPORTANT - Last action failed", message)
+
     def test_redirect_note_marks_canonical_target(self) -> None:
         state = InterpreterState(
             url="https://example.com/articles/hip-hop",
