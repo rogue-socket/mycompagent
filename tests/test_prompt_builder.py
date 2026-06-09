@@ -18,6 +18,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("multi-rule or requirement-driven tasks", message)
         self.assertIn("preserve earlier satisfied constraints", message)
         self.assertIn("smallest reversible edit", message)
+        self.assertIn("letters, digits, symbols, case, length", message)
+        self.assertIn("staying neutral for existing", message)
         self.assertIn("public information", message)
         self.assertIn("Reserve ask_human", message)
         self.assertIn("src_token", message)
@@ -248,6 +250,8 @@ class PromptBuilderTests(unittest.TestCase):
 
         self.assertIn("Variant-loop recovery note:", message)
         self.assertIn("Stop trying more synonyms", message)
+        self.assertIn("fixed one requirement", message)
+        self.assertIn("candidate that satisfies both", message)
         self.assertIn("use browser lookup in a separate tab", message)
 
     def test_task_tab_recovery_note_after_lookup_ref_failure(self) -> None:

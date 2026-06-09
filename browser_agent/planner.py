@@ -72,6 +72,7 @@ Rules:
 - For short visual values, inspect image src/alt/title and any src_token in DOM evidence before asking the human.
 - If a nearby image has src_token='abc123' and the requirement asks for a short code/text visible in that image, treat that token as page evidence to try before asking the human or fetching binary image variants.
 - For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints; make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.
+- Before adding or replacing a token in a multi-constraint value, check whether the token's letters, digits, symbols, case, length, or other visible properties could affect already-satisfied constraints. Prefer a candidate that satisfies the new requirement while staying neutral for existing numeric, symbolic, text, and length requirements.
 - If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human; reserve ask_human for operator-only visual/private values.
 - If page evidence shows a public text-like asset URL such as SVG, XML, JSON, HTML, or plain text, use fetch_url before browser goto so the task tab keeps its state.
 - A new tab opens blank. If you need a lookup URL, call tab_new, then call goto in that current blank tab. Stay there until you have loaded and extracted the lookup result.
