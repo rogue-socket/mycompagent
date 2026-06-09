@@ -81,9 +81,9 @@ Prompts:
 - `--safe`: approve every action. Best for first-time flows and logins.
 - `--hybrid`: approves only risky actions (navigation, typing, submissions, destructive clicks).
 - `--auto`: fully autonomous.
-- `--ask-human`: lets `--auto` pause for short human-provided values, such as
-  CAPTCHA text. Safe and hybrid runs allow this by default because they are
-  already interactive.
+- `--ask-human`: lets `--auto` pause for short human-provided visual values.
+  Safe and hybrid runs allow this by default because they are already
+  interactive.
 
 Examples:
 
@@ -176,141 +176,49 @@ Fun variations to try:
 See [docs/wikipedia-hard-run-evaluation-2026-05-27.md](docs/wikipedia-hard-run-evaluation-2026-05-27.md)
 for completed and failed example routes.
 
-### 3.7 Wordle game test
+### 3.7 Interactive game tests
 
-The agent can also play UI-heavy puzzle games when the page exposes enough
-state through the DOM or keyboard feedback. A successful run against the
-official Wordle site solved the puzzle in four guesses:
+Interactive games are useful stress tests when they exercise different browser
+capabilities without relying on fixed answers. Keep prompts outcome-oriented:
+describe the current goal, constraints, and completion condition, but do not
+provide recipes, exact guesses, routes, or puzzle answers.
 
-```text
-CRANE -> STAIR -> GUARD -> WHARF
-```
+Recommended test classes:
 
-Run command:
+- **Keyboard-feedback puzzle**: use visible tile or key state after each guess,
+  update the hypothesis, and stop when solved or attempts are exhausted.
+- **Canvas gesture puzzle**: use `draw_circle` or other bounded gesture tools
+  when the target is a canvas-like surface rather than a normal element ref.
+- **Drag-and-combine puzzle**: use visible inventory/search controls, click
+  items onto the canvas when helpful, and combine visible cards while tracking
+  discovered results.
+- **Multi-rule form puzzle**: preserve previously satisfied constraints, compare
+  the current value with visible status lines, make the smallest reversible edit,
+  and verify after every change.
+- **Visual-only short value**: use `ask_human` only when the needed value is
+  visible to the operator but not recoverable from DOM evidence, screenshot
+  evidence, or public lookup.
+- **Public text asset clue**: if DOM evidence exposes a public SVG, XML, JSON,
+  HTML, or text URL, use `fetch_url` before browser navigation so stateful task
+  tabs keep their current input and formatting.
 
-```bash
-browser-agent "Play one game of Wordle on the official Wordle website. If a help, intro, login, stats, or subscription modal blocks the board, close or dismiss it. Guess valid five-letter English words. After each guess, use the tile colors and keyboard colors to choose the next guess. Do not log in or subscribe. Finish when the puzzle is solved, when all six guesses are used, or when the page clearly shows the game is over." \
-  --auto \
-  --llm-provider codex \
-  --headed \
-  --debug \
-  --start-url https://www.nytimes.com/games/wordle/index.html \
-  --max-steps 35
-```
-
-Result: `runs/run_20260609T071938Z` completed in 13 steps and 208.53s with
-`Solved the puzzle with WHARF.` The run recovered from one stale Play-button ref,
-dismissed the privacy and tutorial modals, then used tile feedback to choose each
-next guess.
-
-### 3.8 Canvas gesture test: Perfect Circle
-
-The Perfect Circle game on neal.fun is a focused canvas-gesture test. The page
-starts normally, then asks for a freehand circle around a visual target that is
-not exposed as a normal clickable control. The agent now has a bounded
-`draw_circle` tool for this specific gesture class.
+Generic run pattern:
 
 ```bash
-browser-agent "Play the Perfect Circle game on neal.fun. Dismiss any intro or cookie popups if they block the game. Start the game, draw one circle as accurately as possible using draw_circle with radius 170 and steps 24, then finish with the score shown on the page." \
-  --auto \
-  --llm-provider codex \
-  --headed \
-  --debug \
-  --start-url https://neal.fun/perfect-circle/ \
-  --max-steps 20
-```
-
-Earlier runs such as `runs/run_20260609T072626Z` and
-`runs/run_20260609T113940Z` clicked `Go`, reached the drawing prompt, and then
-stopped because no canvas gesture primitive was available. After adding
-`draw_circle`, `runs/run_20260609T114407Z` completed in 4 steps. The page rendered
-`99.8%` with the label `Divine circle`.
-
-### 3.9 Infinite Craft drag test
-
-Infinite Craft is a useful long-horizon game test because it requires repeated
-drag-and-drop, inventory search, duplicate item handling, and recipe tracking.
-The installed `playwright-cli drag <startRef> <endRef>` command currently reports
-a schema error for valid refs, so the agent now retries that specific failure
-with a guarded mouse-path fallback that computes DOM element centers and performs
-the drag with Playwright mouse events.
-
-Run command:
-
-```bash
-browser-agent "Play Infinite Craft on neal.fun. Goal: create Adolf Hitler if possible; if the game only produces Hitler, finish with Hitler and the path. Treat the target as a neutral game item; do not praise or glorify it. Use only the game interface. Important route hints: create Time Machine with Water + Fire = Steam; Fire + Steam = Engine; Engine + Engine = Rocket; Engine + Rocket = Space Ship; Steam + Space Ship = Time Machine. Create Cigar with Earth + Water = Plant; Wind + Plant = Dandelion; Water + Dandelion = Wine; Fire + Dandelion = Ash; Wine + Ash = Cigar. Then combine Time Machine + Cigar = Hitler. If Adolf Hitler specifically is still needed, recipe references suggest Austria + Donald Trump or German + Donald Trump, but only pursue that if practical after Hitler. Use search to find existing inventory items, click items to place them on canvas, and drag visible cards together to combine them. Finish when the target or closest created target is visible, with the exact path." \
-  --auto \
-  --llm-provider codex \
-  --session ih3 \
-  --headed \
-  --debug \
-  --start-url https://neal.fun/infinite-craft/ \
-  --max-steps 100
-```
-
-Result: `runs/run_20260609T091325Z` completed in 27 steps and 368.59s. The game
-created `Hitler`, not the exact `Adolf Hitler` label. Completed path:
-
-```text
-Water + Fire = Steam
-Fire + Steam = Engine
-Engine + Engine = Rocket
-Engine + Rocket = Space Ship
-Steam + Space Ship = Time Machine
-Earth + Water = Plant
-Wind + Plant = Dandelion
-Water + Dandelion = Wine
-Fire + Dandelion = Ash
-Wine + Ash = Cigar
-Time Machine + Cigar = Hitler
-```
-
-The run also exposed two drag-specific requirements: same-label recipes such as
-`Engine + Engine` need distinct DOM matches, and palette-to-canvas drags are less
-reliable than clicking inventory items onto the canvas before combining visible
-cards.
-
-### 3.10 Password Game CAPTCHA test
-
-The Password Game is a harder mixed-control test because later rules can require
-visual-only information. A run with screenshot OCR reached Rule 10, but stopped
-because the CAPTCHA text could not be read reliably from DOM state or OCR:
-
-```text
-Current password: Aaaaa!799juneVIIpepsiFeSBUN
-Blocked rule: Rule 10, CAPTCHA
-Run: runs/run_20260609T093756Z
-```
-
-The fix is to treat this as human-in-the-loop input rather than terminal failure.
-The planner now has an `ask_human` tool for short missing values, and `--auto`
-runs can opt into it with `--ask-human`:
-
-```bash
-browser-agent "Play The Password Game on neal.fun. Dismiss any popup only if it blocks the game. Enter and edit the password to satisfy the visible rules one by one. Read each new rule after submitting or editing, keep the password valid for earlier rules, and continue until the game says the password is accepted or complete. If a rule requires a short visual value that is not available in the page state, ask the human for it and continue." \
+browser-agent "<describe the game goal, allowed interactions, and completion condition without giving fixed answers>" \
   --auto \
   --ask-human \
   --llm-provider codex \
-  --session pg2 \
   --headed \
   --debug \
-  --start-url https://neal.fun/password-game/ \
-  --max-steps 80
+  --start-url <game-url> \
+  --max-steps <step-budget>
 ```
 
-Human answers are passed to the planner as tool results so it can continue, but
-the action log records only that a response was provided. Do not use this path
-for secrets that should not enter planner context.
-
-Follow-up run `runs/run_20260609T094628Z` confirmed the HITL path works for
-short operator-visible values: the agent asked for the Rule 10 CAPTCHA, accepted
-`4dgf7`, and later used HITL again for the Street View country and chess move.
-It progressed to Rule 18, then got stuck because it treated the input length
-counter as the atomic-number total and repeatedly made arithmetic guesses. That
-is a different class of failure: the agent needs better state tracking, evidence
-comparison, arithmetic checking, and reversible-edit planning. The current
-direction is to improve those generic reasoning capabilities rather than add
-Password Game-specific tools or domain solvers.
+Debug runs should be evaluated by whether the agent read available evidence,
+protected stateful tabs during lookup, avoided repeated no-op tab selections,
+used public text asset fetching before navigation, and logged a grounded finish
+only when page evidence supported completion.
 
 ## 4) Login Flows
 
