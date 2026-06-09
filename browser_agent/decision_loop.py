@@ -2531,6 +2531,9 @@ def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
     elif _looks_svg_text(text, content_type):
         text = _svg_to_readable_text(text)
         text_format = "svg_text"
+    elif _looks_json_text(text, content_type):
+        text = _json_to_readable_text(text)
+        text_format = "json_text"
     elif _looks_xml_text(text, content_type):
         text = _xml_to_readable_text(text)
         text_format = "xml_text"
@@ -2581,6 +2584,14 @@ def _looks_svg_text(text: str, content_type: str) -> bool:
     return "svg" in lowered_type or bool(re.search(r"<svg\b", text[:2000], re.I))
 
 
+def _looks_json_text(text: str, content_type: str) -> bool:
+    lowered_type = (content_type or "").lower()
+    if "json" in lowered_type:
+        return True
+    stripped = (text or "").lstrip()
+    return stripped.startswith("{") or stripped.startswith("[")
+
+
 def _looks_xml_text(text: str, content_type: str) -> bool:
     lowered_type = (content_type or "").lower()
     return "xml" in lowered_type or bool(re.search(r"<\?xml\b|<[A-Za-z][\w:.-]*(?:\s|>)", text[:2000]))
@@ -2620,6 +2631,58 @@ def _xml_to_readable_text(text: str) -> str:
         preferred_tags=("title", "name", "label", "description", "desc", "text"),
         include_attrs=("aria-label", "alt", "title", "id", "name", "href"),
     )
+
+
+def _json_to_readable_text(text: str) -> str:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    lines: list[str] = []
+    for path, value in _json_leaf_values(data):
+        rendered = _render_json_leaf(value)
+        if rendered:
+            lines.append(f"{path}: {rendered}")
+        if len(lines) >= 120:
+            break
+    if lines:
+        return "\n".join(lines)
+    return json.dumps(data, ensure_ascii=True, sort_keys=True)[:12000]
+
+
+def _json_leaf_values(data: Any, path: str = "$") -> list[tuple[str, Any]]:
+    leaves: list[tuple[str, Any]] = []
+    if isinstance(data, dict):
+        for key, value in data.items():
+            child_path = f"{path}.{key}" if _json_path_key(str(key)) else f"{path}[{key!r}]"
+            leaves.extend(_json_leaf_values(value, child_path))
+            if len(leaves) >= 160:
+                break
+    elif isinstance(data, list):
+        for index, value in enumerate(data[:80]):
+            leaves.extend(_json_leaf_values(value, f"{path}[{index}]"))
+            if len(leaves) >= 160:
+                break
+    else:
+        leaves.append((path, data))
+    return leaves
+
+
+def _json_path_key(key: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key))
+
+
+def _render_json_leaf(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    rendered = re.sub(r"\s+", " ", str(value)).strip()
+    if not rendered:
+        return ""
+    return rendered[:500]
 
 
 def _markup_to_readable_text(

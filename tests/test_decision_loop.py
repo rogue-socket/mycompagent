@@ -8,7 +8,9 @@ from browser_agent.decision_loop import (
     DecisionLoop,
     RunResult,
     _html_to_readable_text,
+    _json_to_readable_text,
     _looks_html_text,
+    _looks_json_text,
     _looks_svg_text,
     _status_indicators_from_dom_evidence,
     _svg_to_readable_text,
@@ -2321,6 +2323,25 @@ class DecisionLoopMetadataTests(unittest.TestCase):
         self.assertIn("Current value: Waxing Crescent.", text)
         self.assertNotIn("window.noise", text)
         self.assertNotIn("<p>", text)
+
+    def test_fetch_json_text_is_normalized_for_planner_evidence(self) -> None:
+        raw_json = json.dumps(
+            {
+                "status": "ok",
+                "answer": "current public value",
+                "items": [{"name": "first", "score": 7}],
+                "meta": {"valid": True},
+            }
+        )
+
+        text = _json_to_readable_text(raw_json)
+
+        self.assertTrue(_looks_json_text(raw_json, "application/json"))
+        self.assertIn("$.status: ok", text)
+        self.assertIn("$.answer: current public value", text)
+        self.assertIn("$.items[0].name: first", text)
+        self.assertIn("$.items[0].score: 7", text)
+        self.assertIn("$.meta.valid: true", text)
 
     def test_fetch_svg_text_is_normalized_for_planner_evidence(self) -> None:
         raw_svg = """
