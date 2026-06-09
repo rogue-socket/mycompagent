@@ -367,6 +367,76 @@ class MultiSiteSearchPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class DragFallbackExecutor:
+    def __init__(self) -> None:
+        self.combined = False
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command == "playwright-cli drag e100 e104":
+            return CommandResult(
+                command,
+                1,
+                "",
+                (
+                    '[{"path":["startElement"],"message":"Invalid input"},'
+                    '{"path":["endElement"],"message":"Invalid input"}]'
+                ),
+            )
+        if command.startswith("playwright-cli run-code "):
+            self.combined = True
+            return CommandResult(command, 0, "### Result\nDragged Water to Earth", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        lines = [
+            "generic [ref=e100]:",
+            "  - generic: 💧",
+            "  - generic: Water",
+            "generic [ref=e104]:",
+            "  - generic: 🌍",
+            "  - generic: Earth",
+        ]
+        if self.combined:
+            lines.append('text "Created Plant."')
+        return CommandResult("playwright-cli snapshot", 0, _workflow_snapshot(lines), "")
+
+    def _visible_text(self) -> str:
+        if self.combined:
+            return "Infinite Craft\nWater\nEarth\nCreated Plant."
+        return "Infinite Craft\nWater\nEarth"
+
+
+class DragFallbackPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "drag",
+                {"source_ref": "e100", "target_ref": "e104"},
+                "Combine the placed elements.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
+            self.testcase.assertIn("Dragged Water to Earth", self.tool_results[-1]["output"])
+            return _tool("finish", {"reason": "Drag fallback completed."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,

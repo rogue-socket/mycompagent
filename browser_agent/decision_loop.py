@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shlex
 import shutil
@@ -487,10 +488,40 @@ class DecisionLoop:
                 self.last_action_ok = exec_status == "ok"
                 recovery_result = None
                 recovery_status = ""
+                recovery_command = ""
+                recovery_kind = ""
+                if exec_status != "ok" and self._drag_failed_by_cli_schema(
+                    parsed_action, exec_result
+                ):
+                    recovery_command = self._drag_mouse_fallback_command(
+                        parsed_action,
+                        snapshot_state.elements,
+                    )
+                    if recovery_command:
+                        recovery_kind = "drag_mouse_fallback"
+                        self._log(
+                            f"Step {self.step}: drag failed in CLI schema; "
+                            "retrying with mouse fallback"
+                        )
+                        recovery_result = self.executor.run(recovery_command)
+                        recovery_status = (
+                            "ok" if recovery_result.returncode == 0 else "error"
+                        )
+                        self._log(
+                            self._format_command_result(
+                                "auto-recovery drag mouse fallback",
+                                recovery_result,
+                            )
+                        )
+                        if recovery_status == "ok":
+                            exec_result = recovery_result
+                            exec_status = "ok"
+                            self.last_action_ok = True
                 if exec_status != "ok" and self._click_blocked_by_overlay(
                     parsed_action, exec_result
                 ):
                     recovery_command = "playwright-cli press Escape"
+                    recovery_kind = "overlay_escape"
                     self._log(
                         f"Step {self.step}: click blocked by overlay; pressing Escape"
                     )
@@ -521,7 +552,8 @@ class DecisionLoop:
                         self.clicked_route.append(route_entry)
                 if recovery_result is not None:
                     action_payload["recovery"] = {
-                        "command": "playwright-cli press Escape",
+                        "kind": recovery_kind,
+                        "command": recovery_command,
                         "execution_result": recovery_status,
                         "stdout": recovery_result.stdout,
                         "stderr": recovery_result.stderr,
@@ -538,7 +570,7 @@ class DecisionLoop:
                         self.paths.actions_log,
                         {
                             "step": self.step,
-                            "command": "playwright-cli press Escape",
+                            "command": recovery_command,
                             "approval_status": "auto_recovery",
                             "execution_result": recovery_status,
                             "trigger": parsed_action.action,
@@ -547,7 +579,7 @@ class DecisionLoop:
                             "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
-                    self.action_history.append("playwright-cli press Escape")
+                    self.action_history.append(recovery_command)
 
                 # Send execution result back to chat so the LLM knows what happened.
                 result_payload = {"status": exec_status}
@@ -557,12 +589,15 @@ class DecisionLoop:
                     result_payload["error"] = (exec_result.stderr or "command failed")[:500]
                     self.last_step_error = result_payload["error"]
                     if recovery_status == "ok":
-                        result_payload["recovery"] = "pressed Escape to dismiss blocking overlay"
-                        self.last_step_error = (
-                            "The click was blocked by a modal or overlay, so Escape was "
-                            "pressed to dismiss it. Use the updated page state instead of "
-                            "repeating the blocked click."
-                        )
+                        if recovery_kind == "overlay_escape":
+                            result_payload["recovery"] = "pressed Escape to dismiss blocking overlay"
+                            self.last_step_error = (
+                                "The click was blocked by a modal or overlay, so Escape was "
+                                "pressed to dismiss it. Use the updated page state instead of "
+                                "repeating the blocked click."
+                            )
+                        elif recovery_kind == "drag_mouse_fallback":
+                            result_payload["recovery"] = "retried drag with mouse fallback"
 
                 try:
                     self.planner.send_tool_result(
@@ -842,6 +877,84 @@ class DecisionLoop:
         return any(token in stderr for token in ("overlay", "dialog", "modal"))
 
     @staticmethod
+    def _drag_failed_by_cli_schema(action: Any, result: Any) -> bool:
+        if action.command != "drag":
+            return False
+        stderr = getattr(result, "stderr", "") or ""
+        return "startElement" in stderr and "endElement" in stderr
+
+    @staticmethod
+    def _drag_mouse_fallback_command(action: Any, elements: list[Any]) -> str | None:
+        if action.command != "drag" or len(action.args) < 2:
+            return None
+
+        source = _element_by_ref(elements, action.args[0])
+        target = _element_by_ref(elements, action.args[1])
+        source_label = _drag_label(source)
+        target_label = _drag_label(target)
+        if not source_label or not target_label:
+            return None
+
+        code = f"""async page => {{
+  const sourceLabel = {json.dumps(source_label)};
+  const targetLabel = {json.dumps(target_label)};
+  const sourcePreferLast = {json.dumps(_prefer_last_matching_dom_node(source))};
+  const targetPreferLast = {json.dumps(_prefer_last_matching_dom_node(target))};
+  const {{ source, target }} = await page.evaluate((args) => {{
+    const normalize = value => (value || '').replace(/\\s+/g, ' ').trim();
+    const key = value => normalize(value).replace(/\\s/g, '');
+    const candidatesFor = (label) => {{
+      const wanted = key(label);
+      return Array.from(document.querySelectorAll('body *'))
+        .map(el => {{
+          const rect = el.getBoundingClientRect();
+          return {{
+            rect: {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height }},
+            text: normalize(el.textContent),
+          }};
+        }})
+        .filter(item =>
+          item.text &&
+          item.rect.width > 5 &&
+          item.rect.height > 5 &&
+          key(item.text) === wanted
+        );
+    }};
+    const pick = (candidates, label, preferLast, offset = 0) => {{
+      if (!candidates.length) {{
+        throw new Error(`No visible element found for ${{label}}`);
+      }}
+      const baseIndex = preferLast ? candidates.length - 1 : 0;
+      const index = Math.max(0, Math.min(candidates.length - 1, baseIndex + offset));
+      return candidates[index].rect;
+    }};
+    const sourceCandidates = candidatesFor(args.sourceLabel);
+    const targetCandidates = candidatesFor(args.targetLabel);
+    const sameLabel = key(args.sourceLabel) === key(args.targetLabel);
+    return {{
+      source: pick(
+        sourceCandidates,
+        args.sourceLabel,
+        args.sourcePreferLast,
+        sameLabel && sourceCandidates.length > 1 && args.sourcePreferLast ? -1 : 0
+      ),
+      target: pick(targetCandidates, args.targetLabel, args.targetPreferLast),
+    }};
+  }}, {{ sourceLabel, targetLabel, sourcePreferLast, targetPreferLast }});
+  const sx = source.x + source.width / 2;
+  const sy = source.y + source.height / 2;
+  const tx = target.x + target.width / 2;
+  const ty = target.y + target.height / 2;
+  await page.mouse.move(sx, sy);
+  await page.mouse.down();
+  await page.mouse.move(tx, ty, {{ steps: 20 }});
+  await page.mouse.up();
+  await page.waitForTimeout(800);
+  return `Dragged ${{sourceLabel}} to ${{targetLabel}}`;
+}}"""
+        return "playwright-cli run-code " + shlex.quote(code)
+
+    @staticmethod
     def _click_route_entry(element: Any) -> dict[str, str]:
         return {
             "ref": element.ref,
@@ -886,6 +999,34 @@ class DecisionLoop:
 def _label_from_description(description: str) -> str:
     match = re.search(r'"([^"]+)"', description or "")
     return match.group(1) if match else (description or "")
+
+
+def _element_by_ref(elements: list[Any], ref: str) -> Any | None:
+    for element in elements:
+        if element.ref == ref:
+            return element
+    return None
+
+
+def _drag_label(element: Any | None) -> str:
+    if element is None:
+        return ""
+    child_text = (getattr(element, "child_text", "") or "").strip()
+    if child_text:
+        return re.sub(r"\s*\|\s*", " ", child_text).strip()
+
+    description = (getattr(element, "description", "") or "").strip()
+    if ":" in description:
+        return description.rsplit(":", 1)[1].strip()
+    return _label_from_description(description).strip()
+
+
+def _prefer_last_matching_dom_node(element: Any | None) -> bool:
+    if element is None:
+        return False
+    description = (getattr(element, "description", "") or "").strip().lower()
+    child_text = (getattr(element, "child_text", "") or "").strip()
+    return bool(child_text) and description in {"generic", "generic [cursor=pointer]"}
 
 
 def _hash_text(text: str) -> str:
