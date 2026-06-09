@@ -866,7 +866,7 @@ class DecisionLoop:
             return ""
         if not self.open_url or not _same_location(interpreter_state.url, self.open_url):
             return ""
-        if not _is_cross_site_navigation(interpreter_state.url, parsed_action.args[0]):
+        if not _navigates_away_from_location(interpreter_state.url, parsed_action.args[0]):
             return ""
         if not self._has_stateful_task_controls(interpreter_state):
             return ""
@@ -875,9 +875,10 @@ class DecisionLoop:
         return (
             "Stateful task-tab navigation guard: the browser is back on the original "
             "task page with active form/editable state. Do not use goto here for more "
-            "lookup because it can discard task progress. Switch to an existing lookup "
-            "tab or open a new blank tab, load the lookup URL there, extract the value, "
-            "then return to this task tab before editing visible task controls."
+            "lookup, including same-site asset or detail URLs, because it can discard "
+            "task progress. Switch to an existing lookup tab or open a new blank tab, "
+            "load the lookup URL there, extract the value, then return to this task tab "
+            "before editing visible task controls."
         )
 
     def _has_stateful_task_controls(self, interpreter_state: Any) -> bool:
@@ -1228,14 +1229,14 @@ def _same_location(current_url: str, expected_url: str) -> bool:
     )
 
 
-def _is_cross_site_navigation(current_url: str, target_url: str) -> bool:
+def _navigates_away_from_location(current_url: str, target_url: str) -> bool:
     current = urlparse(current_url or "")
     target = urlparse(target_url or "")
     if current.scheme not in {"http", "https"}:
         return False
     if target.scheme not in {"http", "https"}:
         return False
-    return bool(target.netloc and current.netloc != target.netloc)
+    return bool(target.netloc and not _same_location(current_url, target_url))
 
 
 def _normalized_path(path: str) -> str:

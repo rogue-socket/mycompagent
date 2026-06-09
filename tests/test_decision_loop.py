@@ -667,8 +667,8 @@ class StatefulTaskNavigationGuardPlanner:
         if step == 4:
             return _tool(
                 "goto",
-                {"url": "https://lookup.example/other"},
-                "Incorrectly try another lookup on the task tab.",
+                {"url": "https://example.com/task/asset.svg"},
+                "Incorrectly try a same-site lookup on the task tab.",
             )
         if step == 5:
             self.testcase.assertIn("Stateful task-tab navigation guard", message)
@@ -696,7 +696,7 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
-    def test_stateful_task_tab_rejects_cross_site_lookup_goto(self) -> None:
+    def test_stateful_task_tab_rejects_lookup_goto_away_from_task_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             paths = RunPaths(root / "run")
@@ -719,7 +719,7 @@ class DecisionLoopMetadataTests(unittest.TestCase):
 
             self.assertEqual(result.stop_reason, "completed")
             self.assertNotIn(
-                "playwright-cli goto https://lookup.example/other",
+                "playwright-cli goto https://example.com/task/asset.svg",
                 executor.commands,
             )
             actions = _read_jsonl(paths.actions_log)
