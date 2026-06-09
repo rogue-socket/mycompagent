@@ -54,6 +54,8 @@ def build_system_instruction(
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
         "- For short visual values, inspect image src/alt/title and any src_token in DOM evidence before asking the human.",
         "- If a nearby image has src_token='abc123' and the requirement asks for a short code/text visible in that image, treat that token as page evidence to try before asking the human or fetching binary image variants.",
+        "- Do not use remembered facts, prior knowledge, or assumptions about a specific site, game, form, puzzle, brand, date, answer, or hidden future rule as evidence. Use only the current page state, fetched source, public lookup loaded in this run, or a human response.",
+        "- For evolving requirement pages, do not anticipate hidden requirements. Satisfy only the currently visible failing requirement with the smallest useful edit, then observe the next page state.",
         "- For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints. Before editing a value, compare the current requirements/status lines with the current value, make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.",
         "- Do not fill an editable with the exact value it already contains. If the current value already satisfies the task, finish; otherwise make a value-changing edit that targets a visible failing requirement.",
         "- Before adding or replacing a token in a multi-constraint value, check whether the token's letters, digits, symbols, case, length, or other visible properties could affect already-satisfied constraints. Prefer a candidate that satisfies the new requirement while staying neutral for existing numeric, symbolic, text, and length requirements.",
@@ -86,7 +88,7 @@ def build_system_instruction(
             "",
             "## Lessons from experience",
             "",
-            "These are lessons learned from previous runs. Follow them.",
+            "These are interaction tactics learned from previous runs. Do not treat them as evidence for task answers, hidden rules, site-specific facts, or values to enter.",
             *lesson_lines,
         ])
 

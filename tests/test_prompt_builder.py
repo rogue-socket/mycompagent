@@ -28,6 +28,11 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("treat that token as page evidence", message)
         self.assertIn("binary image variants", message)
         self.assertIn("before asking the human", message)
+        self.assertIn("Do not use remembered facts", message)
+        self.assertIn("hidden future rule", message)
+        self.assertIn("public lookup loaded in this run", message)
+        self.assertIn("do not anticipate hidden requirements", message)
+        self.assertIn("currently visible failing requirement", message)
         self.assertIn("A new tab opens blank", message)
         self.assertIn("Stay there until you have loaded and extracted", message)
         self.assertIn("already marked current", message)
@@ -53,6 +58,20 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Use 'select_text' to select an exact substring", message)
         self.assertIn("before replacing or formatting only that substring", message)
         self.assertIn("Use 'format_selection'", message)
+
+    def test_memory_lessons_are_not_task_evidence(self) -> None:
+        class Lesson:
+            lesson = "After entering text in a search box, press Enter."
+
+        message = build_system_instruction(
+            "Complete an evolving form.",
+            tier1_lessons=[Lesson()],
+        )
+
+        self.assertIn("interaction tactics learned from previous runs", message)
+        self.assertIn("Do not treat them as evidence", message)
+        self.assertIn("hidden rules", message)
+        self.assertIn("site-specific facts", message)
 
     def test_task_relevant_links_are_prioritized_in_message(self) -> None:
         elements = [

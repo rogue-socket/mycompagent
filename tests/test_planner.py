@@ -75,6 +75,10 @@ class CodexPlannerTests(unittest.TestCase):
         self.assertIn("source_links", model.prompts[0])
         self.assertIn("source_blocks", model.prompts[0])
         self.assertIn("before guessing", model.prompts[0])
+        self.assertIn("Do not use remembered facts", model.prompts[0])
+        self.assertIn("hidden future rule", model.prompts[0])
+        self.assertIn("do not anticipate hidden requirements", model.prompts[0])
+        self.assertIn("currently visible failing requirement", model.prompts[0])
 
     def test_retries_invalid_json(self) -> None:
         model = _FakeModel(
