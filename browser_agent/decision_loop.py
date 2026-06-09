@@ -9,6 +9,7 @@ import json
 import re
 import shlex
 import shutil
+import ssl
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -2793,7 +2794,16 @@ def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
         },
     )
     try:
-        with urlopen(request, timeout=12) as response:  # noqa: S310 - user-directed URL fetch
+        context = _public_fetch_ssl_context() if parsed.scheme == "https" else None
+        if context is None:
+            response_cm = urlopen(request, timeout=12)  # noqa: S310 - user-directed URL fetch
+        else:
+            response_cm = urlopen(  # noqa: S310 - user-directed URL fetch
+                request,
+                timeout=12,
+                context=context,
+            )
+        with response_cm as response:
             raw = response.read(byte_limit + 1)
             content_type = response.headers.get("content-type", "")
             charset = response.headers.get_content_charset() or "utf-8"
@@ -2816,7 +2826,9 @@ def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
 
     text = raw.decode(charset, errors="replace")
     text_format = "text"
-    if _looks_html_text(text, content_type):
+    if _looks_source_text_response(final_url or url, content_type):
+        text_format = "source_text"
+    elif _looks_html_text(text, content_type):
         text = _html_to_readable_text(text)
         text_format = "html_text"
     elif _looks_svg_text(text, content_type):
@@ -2843,6 +2855,20 @@ def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
     }
 
 
+def _public_fetch_ssl_context() -> ssl.SSLContext | None:
+    try:
+        import certifi
+    except Exception:
+        certifi = None
+
+    try:
+        if certifi is not None:
+            return ssl.create_default_context(cafile=certifi.where())
+        return ssl.create_default_context()
+    except Exception:
+        return None
+
+
 def _fetch_max_chars(value: Any) -> int:
     try:
         parsed = int(value)
@@ -2861,6 +2887,17 @@ def _looks_binary(raw: bytes, content_type: str) -> bool:
         return False
     control = sum(1 for byte in raw[:1024] if byte < 9 or 13 < byte < 32)
     return control / min(len(raw), 1024) > 0.1
+
+
+def _looks_source_text_response(url: str, content_type: str) -> bool:
+    lowered_type = (content_type or "").lower()
+    if "text/plain" not in lowered_type:
+        return False
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    if any(part in {"raw", "source", "src", "code"} for part in path.split("/")):
+        return True
+    return bool(re.search(r"\.(?:html?|js|css|svg|xml|json|md|csv|tsv|txt)$", path))
 
 
 def _looks_html_text(text: str, content_type: str) -> bool:

@@ -3,10 +3,12 @@ import shlex
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from browser_agent.decision_loop import (
     DecisionLoop,
     RunResult,
+    fetch_public_text_url,
     _html_to_readable_text,
     _json_to_readable_text,
     _looks_html_text,
@@ -24,6 +26,87 @@ from browser_agent.snapshot_parser import ElementRef
 
 def _read_jsonl(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+class _FakeFetchHeaders:
+    def get(self, name: str, default: str = "") -> str:
+        if name.lower() == "content-type":
+            return "text/plain; charset=utf-8"
+        return default
+
+    def get_content_charset(self) -> str:
+        return "utf-8"
+
+
+class _FakeFetchResponse:
+    headers = _FakeFetchHeaders()
+    status = 200
+
+    def __enter__(self) -> "_FakeFetchResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read(self, _size: int) -> bytes:
+        return b"public text evidence"
+
+    def geturl(self) -> str:
+        return "https://example.com/data.txt"
+
+
+class PublicFetchTests(unittest.TestCase):
+    def test_https_fetch_uses_verified_ssl_context(self) -> None:
+        contexts: list[object] = []
+        marker = object()
+
+        def fake_urlopen(_request, *, timeout: int, context: object | None = None):
+            self.assertEqual(timeout, 12)
+            contexts.append(context)
+            return _FakeFetchResponse()
+
+        with (
+            patch("browser_agent.decision_loop._public_fetch_ssl_context", return_value=marker),
+            patch("browser_agent.decision_loop.urlopen", side_effect=fake_urlopen),
+        ):
+            result = fetch_public_text_url("https://example.com/data.txt", max_chars=12000)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["text"], "public text evidence")
+        self.assertEqual(contexts, [marker])
+
+    def test_text_plain_source_html_is_preserved_as_source_text(self) -> None:
+        class SourceHeaders:
+            def get(self, name: str, default: str = "") -> str:
+                if name.lower() == "content-type":
+                    return "text/plain; charset=utf-8"
+                return default
+
+            def get_content_charset(self) -> str:
+                return "utf-8"
+
+        class SourceResponse:
+            headers = SourceHeaders()
+            status = 200
+
+            def __enter__(self) -> "SourceResponse":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def read(self, _size: int) -> bytes:
+                return b"<html><body><script>const answer = 'keep me';</script></body></html>"
+
+            def geturl(self) -> str:
+                return "https://example.com/raw/page.html"
+
+        with patch("browser_agent.decision_loop.urlopen", return_value=SourceResponse()):
+            result = fetch_public_text_url("https://example.com/raw/page.html", max_chars=12000)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["text_format"], "source_text")
+        self.assertIn("const answer", result["text"])
 
 
 class AriaComboboxExecutor:

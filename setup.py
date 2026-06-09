@@ -8,6 +8,7 @@ setup(
     install_requires=[
         "google-genai>=1.66.0",
         "PyYAML>=6.0.1",
+        "certifi>=2024.2.2",
     ],
     python_requires=">=3.11",
     entry_points={"console_scripts": ["browser-agent=browser_agent.main:main"]},
