@@ -727,7 +727,7 @@ class SnapshotTimeoutRecoveryExecutor:
             return CommandResult(command, 0, "", "")
         if command == 'playwright-cli eval "document.body.innerText"':
             return CommandResult(command, 0, f"### Result\n{json.dumps('Ready')}", "")
-        if command == "playwright-cli goto https://example.com/asset.svg":
+        if command == "playwright-cli goto https://example.com/detail-page":
             self.bad_navigation = True
             return CommandResult(
                 command,
@@ -768,8 +768,8 @@ class SnapshotTimeoutRecoveryPlanner:
         if step == 1:
             return _tool(
                 "goto",
-                {"url": "https://example.com/asset.svg"},
-                "Try inspecting the asset directly.",
+                {"url": "https://example.com/detail-page"},
+                "Try inspecting the detail page directly.",
             )
         if step == 2:
             self.testcase.assertIn("went back once", message)
@@ -1083,6 +1083,42 @@ class FetchUrlPlanner:
         if step == 2:
             self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
             self.testcase.assertIn("A B C", self.tool_results[-1]["text"])
+            return _tool(
+                "finish",
+                {"reason": "Fetched the visible asset evidence."},
+                "The fetch returned enough evidence.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class TextAssetNavigationGuardPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "goto",
+                {"url": "https://assets.example/data.svg"},
+                "Try to inspect the visible text-like asset in the current tab.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Text-asset navigation guard", message)
+            self.testcase.assertIn("Use fetch_url for the asset", message)
+            return _tool(
+                "fetch_url",
+                {"url": "https://assets.example/data.svg", "max_chars": "4000"},
+                "Fetch the text-like asset without navigating the task tab.",
+            )
+        if step == 3:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
             return _tool(
                 "finish",
                 {"reason": "Fetched the visible asset evidence."},
@@ -1855,6 +1891,44 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[0]["execution_result"], "ok")
             self.assertEqual(actions[0]["content_type"], "image/svg+xml")
             self.assertNotIn("A B C", json.dumps(actions[0]))
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_text_asset_goto_on_stateful_page_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = TextAssetNavigationGuardPlanner(self)
+            executor = FetchUrlExecutor()
+            loop = DecisionLoop(
+                task="Inspect a visible public text asset.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=lambda url, max_chars: {
+                    "status": "ok",
+                    "url": url,
+                    "content_type": "image/svg+xml",
+                    "text": "<svg><desc><pre>A B C</pre></desc></svg>"[:max_chars],
+                    "chars": 43,
+                    "truncated": False,
+                },
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli goto https://assets.example/data.svg", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "text_asset_navigation")
+            self.assertEqual(actions[1]["command"], "fetch_url")
+            self.assertEqual(actions[1]["execution_result"], "ok")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_fetch_url_rejects_non_http_scheme(self) -> None:

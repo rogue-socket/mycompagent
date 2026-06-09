@@ -797,6 +797,28 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                text_asset_navigation = self._text_asset_navigation_warning(
+                    parsed_action,
+                    interpreter_state,
+                )
+                if text_asset_navigation:
+                    self.last_step_error = text_asset_navigation
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "text_asset_navigation",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 failed_url_navigation = self._failed_url_navigation_warning(parsed_action)
                 if failed_url_navigation:
                     self.last_step_error = failed_url_navigation
@@ -1175,6 +1197,28 @@ class DecisionLoop:
             "task progress. Switch to an existing lookup tab or open a new blank tab, "
             "load the lookup URL there, extract the value, then return to this task tab "
             "before editing visible task controls."
+        )
+
+    def _text_asset_navigation_warning(
+        self,
+        parsed_action: Any,
+        interpreter_state: Any,
+    ) -> str:
+        if parsed_action.command != "goto" or not parsed_action.args:
+            return ""
+        target_url = parsed_action.args[0]
+        if not _looks_like_public_text_asset_url(target_url):
+            return ""
+        if not _navigates_away_from_location(interpreter_state.url, target_url):
+            return ""
+        if not self._has_stateful_task_controls(interpreter_state):
+            return ""
+        return (
+            "Text-asset navigation guard: the current page has active form/editable "
+            "state, and the target URL looks like a public text-like asset. Do not "
+            "navigate this tab to inspect that asset because it can lose task context. "
+            "Use fetch_url for the asset, or open/switch to a lookup tab before "
+            "navigating, then return to the task tab before editing visible controls."
         )
 
     def _has_stateful_task_controls(self, interpreter_state: Any) -> bool:
@@ -1972,6 +2016,27 @@ def _navigates_away_from_location(current_url: str, target_url: str) -> bool:
 def _normalized_path(path: str) -> str:
     cleaned = path or "/"
     return cleaned.rstrip("/") or "/"
+
+
+def _looks_like_public_text_asset_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    path = parsed.path.lower()
+    return any(
+        path.endswith(extension)
+        for extension in (
+            ".svg",
+            ".json",
+            ".xml",
+            ".txt",
+            ".csv",
+            ".tsv",
+            ".md",
+            ".yaml",
+            ".yml",
+        )
+    )
 
 
 def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
