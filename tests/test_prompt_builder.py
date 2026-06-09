@@ -18,6 +18,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("multi-rule or requirement-driven tasks", message)
         self.assertIn("preserve earlier satisfied constraints", message)
         self.assertIn("smallest reversible edit", message)
+        self.assertIn("public information", message)
+        self.assertIn("Reserve ask_human", message)
 
     def test_task_relevant_links_are_prioritized_in_message(self) -> None:
         elements = [
@@ -202,6 +204,35 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertLess(message.index("Clickable cards/results"), message.index("Other clickable elements"))
         self.assertIn("If the visible text already satisfies the task, call finish now", message)
         self.assertIn("Do not call snapshot unless the user explicitly asked", message)
+
+    def test_variant_loop_recovery_note_discourages_more_synonym_guesses(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/form",
+            title="Interactive Form",
+            page_type="form",
+            clickable_elements=[ClickableElement("e15", "input", "textbox", "", "action")],
+            visible_text="Requirement 4 must include the displayed value.",
+            page_summary="Requirement form.",
+            dom_evidence=(
+                "- status_indicator: status='error' "
+                "nearby='Requirement 4 must include the displayed value.'"
+            ),
+        )
+
+        message = build_page_message(
+            state,
+            action_history=[
+                "playwright-cli fill e15 alpha",
+                "playwright-cli fill e15 beta",
+                "playwright-cli fill e15 gamma",
+                "playwright-cli fill e15 delta",
+            ],
+            max_elements=10,
+        )
+
+        self.assertIn("Variant-loop recovery note:", message)
+        self.assertIn("Stop trying more synonyms", message)
+        self.assertIn("use browser lookup in a separate tab", message)
 
 
 if __name__ == "__main__":

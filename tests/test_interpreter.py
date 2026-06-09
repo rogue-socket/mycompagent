@@ -2,6 +2,7 @@ import json
 import unittest
 
 from browser_agent.interpreter import _extract_eval_output, interpret_page
+from browser_agent.interpreter_state import to_dict as interpreter_to_dict
 from browser_agent.playwright_executor import PlaywrightExecutor
 from browser_agent.snapshot_parser import SnapshotState, ElementRef
 
@@ -75,6 +76,56 @@ class InterpreterTests(unittest.TestCase):
         self.assertIn("challenge.png", state.dom_evidence)
         self.assertIn("active_editable", state.dom_evidence)
         self.assertIn("<strong>abc</strong>", state.dom_evidence)
+
+    def test_dom_evidence_extracts_generic_status_indicators(self) -> None:
+        snapshot = SnapshotState(
+            url="https://example.com/form",
+            title="Form",
+            elements=[],
+            raw_text="",
+        )
+
+        state = interpret_page(
+            snapshot,
+            DummyExecutor(
+                dom_items=[
+                    {
+                        "kind": "image",
+                        "src": "https://example.com/assets/error.svg",
+                        "nearby": "Requirement A must be fixed.",
+                    },
+                    {
+                        "kind": "image",
+                        "src": "https://example.com/assets/checkmark.svg",
+                        "nearby": "Requirement B is valid.",
+                    },
+                ]
+            ),
+            max_clickables=10,
+        )
+
+        self.assertIn("status_indicator: status='error'", state.dom_evidence)
+        self.assertIn("Requirement A must be fixed.", state.dom_evidence)
+        self.assertIn("status_indicator: status='success'", state.dom_evidence)
+        self.assertIn("Requirement B is valid.", state.dom_evidence)
+
+    def test_interpreter_state_serializes_dom_evidence_for_debugging(self) -> None:
+        snapshot = SnapshotState(
+            url="https://example.com/form",
+            title="Form",
+            elements=[],
+            raw_text="",
+        )
+        state = interpret_page(
+            snapshot,
+            DummyExecutor(dom_items=[{"kind": "image", "src": "https://example.com/error.svg"}]),
+            max_clickables=10,
+        )
+
+        payload = interpreter_to_dict(state)
+
+        self.assertIn("dom_evidence", payload)
+        self.assertIn("status_indicator", payload["dom_evidence"])
 
     def test_aria_options_are_exposed_as_clickable_targets(self) -> None:
         snapshot = SnapshotState(

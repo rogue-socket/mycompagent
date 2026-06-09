@@ -550,6 +550,16 @@ def _format_dom_evidence(items: list[Any]) -> list[str]:
         if not isinstance(item, dict):
             continue
         kind = str(item.get("kind") or "node")
+        status = _status_indicator(item)
+        if status:
+            nearby = str(item.get("nearby") or item.get("text") or item.get("alt") or "")
+            src = str(item.get("src") or "")
+            detail_parts = [f"status={status!r}"]
+            if nearby:
+                detail_parts.append(f"nearby={nearby!r}")
+            if src:
+                detail_parts.append(f"src={src!r}")
+            lines.append("- status_indicator: " + " ".join(detail_parts))
         fields = [
             (key, str(value))
             for key, value in item.items()
@@ -560,6 +570,18 @@ def _format_dom_evidence(items: list[Any]) -> list[str]:
         detail = " ".join(f"{key}={value!r}" for key, value in fields[:5])
         lines.append(f"- {kind}: {detail}")
     return lines
+
+
+def _status_indicator(item: dict[str, Any]) -> str:
+    haystack = " ".join(
+        str(item.get(key) or "")
+        for key in ("src", "alt", "title", "aria", "text")
+    ).lower()
+    if any(token in haystack for token in ("error", "invalid", "fail", "warning")):
+        return "error"
+    if any(token in haystack for token in ("checkmark", "check-mark", "success", "valid", "complete")):
+        return "success"
+    return ""
 
 
 def _extract_eval_output(output: str) -> str:

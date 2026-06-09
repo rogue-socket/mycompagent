@@ -48,6 +48,7 @@ def build_system_instruction(
         "  autocomplete dropdowns often cover it and cause timeout errors.",
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
         "- For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints. Before editing a value, compare the current requirements/status lines with the current value, make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.",
+        "- If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human. Reserve ask_human for operator-only visual/private values that page evidence and browser lookup cannot obtain.",
         "- Use 'draw_circle' when a game asks for a freehand circle on a canvas-like surface.",
         "- Use 'ask_human' when a short value visible to the operator, such as CAPTCHA text, is needed to continue.",
         "- Call 'finish' when the task is complete.",
@@ -242,6 +243,10 @@ def build_page_message(
 
     if bad_url_guess_note:
         sections.insert(2, "URL recovery note:\n" + bad_url_guess_note)
+
+    variant_note = _variant_guess_recovery_note(action_history, state.visible_text, state.dom_evidence)
+    if variant_note:
+        sections.insert(2, "Variant-loop recovery note:\n" + variant_note)
 
     if last_error:
         recovery_note = _custom_control_recovery_note(last_error, selected_elements, task or "")
@@ -600,6 +605,50 @@ def _bad_url_guess_note(
         "a search/filter control instead."
         + ref_note
     )
+
+
+def _variant_guess_recovery_note(
+    action_history: list[str],
+    visible_text: str,
+    dom_evidence: str,
+) -> str:
+    fills = [_fill_target(action) for action in action_history[-8:]]
+    fills = [target for target in fills if target]
+    if len(fills) < 4:
+        return ""
+    most_recent = fills[-1]
+    if sum(1 for target in fills if target == most_recent) < 4:
+        return ""
+    status_text = f"{visible_text[:1200]}\n{dom_evidence[:1200]}".lower()
+    has_unresolved_status = any(
+        marker in status_text
+        for marker in (
+            "status='error'",
+            'status="error"',
+            "error",
+            "invalid",
+            "must",
+            "required",
+            "requires",
+            "requirement",
+            "rule",
+        )
+    )
+    if not has_unresolved_status:
+        return ""
+    return (
+        "Several recent fills changed variants of the same field while a requirement/status "
+        "still appears unresolved. Stop trying more synonyms or formatting variants. First "
+        "inspect the status indicators and available page evidence to identify what is actually "
+        "wrong; if the value is public information, use browser lookup in a separate tab when "
+        "possible; if it is operator-only visual/private information and human input is enabled, "
+        "ask the human."
+    )
+
+
+def _fill_target(action: str) -> str:
+    match = re.search(r"\bfill\s+(e\d+)\b", action)
+    return match.group(1) if match else ""
 
 
 def _looks_like_not_found_page(state: InterpreterState) -> bool:

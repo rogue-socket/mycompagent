@@ -24,4 +24,5 @@ def to_dict(state: InterpreterState) -> dict[str, Any]:
         ],
         "visible_text": state.visible_text,
         "page_summary": state.page_summary,
+        "dom_evidence": state.dom_evidence,
     }

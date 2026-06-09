@@ -303,3 +303,21 @@ def test_constraint_ledger_preserves_plain_status_prefixes() -> None:
     )
 
     assert "Status: Requirement 1 satisfied." in ledger.summary(contract)
+
+
+def test_constraint_ledger_records_status_indicators_from_dom_evidence() -> None:
+    contract = build_task_contract("Complete the interactive form.")
+    ledger = EvidenceLedger()
+
+    ledger.add_page(
+        step=2,
+        url="https://example.com/form",
+        title="Interactive Form",
+        text="- status_indicator: status='error' nearby='Requirement A must be fixed.'",
+        contract=contract,
+    )
+
+    summary = ledger.summary(contract)
+
+    assert "status='error'" in summary
+    assert "Requirement A must be fixed." in summary

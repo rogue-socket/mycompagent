@@ -148,7 +148,15 @@ class DecisionLoop:
                     step=self.step,
                     url=interpreter_state.url,
                     title=interpreter_state.title,
-                    text=snapshot_state.raw_text,
+                    text="\n".join(
+                        part
+                        for part in (
+                            snapshot_state.raw_text,
+                            interpreter_state.visible_text,
+                            interpreter_state.dom_evidence,
+                        )
+                        if part
+                    ),
                     contract=self.task_contract,
                 )
                 task_context = self.evidence_ledger.summary(self.task_contract)
