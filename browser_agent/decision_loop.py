@@ -609,6 +609,28 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                speculative_fill = self._speculative_variant_fill_warning(
+                    parsed_action,
+                    interpreter_state,
+                    tool_result.reasoning_text,
+                )
+                if speculative_fill:
+                    self.last_step_error = speculative_fill
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "speculative_variant_fill",
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 # ---- Approval ----
                 approved = True
                 if requires_approval(self.mode, parsed_action, snapshot_state.elements):
@@ -961,6 +983,38 @@ class DecisionLoop:
         has_navigation = any(action.startswith("playwright-cli goto ") for action in recent)
         return has_tab_action and has_navigation
 
+    def _speculative_variant_fill_warning(
+        self,
+        parsed_action: Any,
+        interpreter_state: Any,
+        reasoning_text: str,
+    ) -> str:
+        if parsed_action.command != "fill" or len(parsed_action.args) < 2:
+            return ""
+        if not _has_unresolved_status(interpreter_state):
+            return ""
+        if not _looks_speculative(reasoning_text):
+            return ""
+        recent = self.action_history[-6:]
+        if _latest_fetch_url_status(recent) != "error":
+            return ""
+        fill_value = parsed_action.args[1]
+        current_value = _active_editable_text(
+            getattr(interpreter_state, "dom_evidence", "") or ""
+        )
+        if not current_value:
+            return ""
+        if not _small_variant_edit(current_value, fill_value):
+            return ""
+        return (
+            "Speculative variant fill guard: the page still shows an unresolved "
+            "requirement and recent evidence lookup failed. Do not try another guessed "
+            "candidate value or swap a short suffix. Gather stronger evidence first: "
+            "use browser lookup in a separate tab, fetch a visible/public text source, "
+            "inspect page evidence, or ask the human only if the value is operator-visible "
+            "and cannot be recovered."
+        )
+
     def _human_input_allowed(self) -> bool:
         return bool(self.config.get("allow_human_input", self.mode != "auto"))
 
@@ -1301,6 +1355,81 @@ def _current_tab_index(snapshot_text: str) -> int | None:
         if match:
             return int(match.group(1))
     return None
+
+
+def _has_unresolved_status(interpreter_state: Any) -> bool:
+    haystack = (
+        f"{getattr(interpreter_state, 'visible_text', '')[:1600]}\n"
+        f"{getattr(interpreter_state, 'dom_evidence', '')[:1600]}"
+    ).lower()
+    return any(
+        marker in haystack
+        for marker in (
+            "status='error'",
+            'status="error"',
+            "invalid",
+            "must",
+            "required",
+            "requires",
+            "requirement",
+            "rule",
+        )
+    )
+
+
+def _looks_speculative(reasoning_text: str) -> bool:
+    lowered = (reasoning_text or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "guess",
+            "candidate",
+            "most likely",
+            "likely",
+            "try ",
+            "if this fails",
+            "swap",
+            "next most",
+        )
+    )
+
+
+def _latest_fetch_url_status(actions: list[str]) -> str:
+    for action in reversed(actions):
+        if action.startswith("fetch_url ok:"):
+            return "ok"
+        if action.startswith("fetch_url error:"):
+            return "error"
+    return ""
+
+
+def _active_editable_text(dom_evidence: str) -> str:
+    match = re.search(r"active_editable: [^\n]*text='([^']*)'", dom_evidence or "")
+    if not match:
+        return ""
+    return match.group(1)
+
+
+def _small_variant_edit(current_value: str, new_value: str) -> bool:
+    if not current_value or current_value == new_value:
+        return False
+    if new_value.startswith(current_value) and len(new_value) - len(current_value) <= 4:
+        return True
+    prefix_len = _common_prefix_len(current_value, new_value)
+    changed_current = len(current_value) - prefix_len
+    changed_new = len(new_value) - prefix_len
+    return prefix_len >= max(1, min(len(current_value), len(new_value)) - 4) and (
+        changed_current <= 4 or changed_new <= 4
+    )
+
+
+def _common_prefix_len(left: str, right: str) -> int:
+    count = 0
+    for left_char, right_char in zip(left, right):
+        if left_char != right_char:
+            break
+        count += 1
+    return count
 
 
 def _same_location(current_url: str, expected_url: str) -> bool:

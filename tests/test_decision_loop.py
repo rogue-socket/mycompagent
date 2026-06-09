@@ -840,6 +840,134 @@ class RejectFetchSchemePlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class SpeculativeVariantExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.value = "base"
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            text = (
+                f"Current value\n{self.value}\n"
+                "Requirement: include the exact public value."
+            )
+            return CommandResult(command, 0, f"### Result\n{json.dumps(text)}", "")
+        if command.startswith("playwright-cli run-code "):
+            items = [
+                {
+                    "kind": "active_editable",
+                    "tag": "DIV",
+                    "role": "textbox",
+                    "text": self.value,
+                    "html": f"<p>{self.value}</p>",
+                },
+                {
+                    "kind": "image",
+                    "src": "https://example.com/error.svg",
+                    "nearby": "Requirement: include the exact public value.",
+                },
+            ]
+            return CommandResult(command, 0, f"### Result\n{json.dumps(items)}", "")
+        if command == "playwright-cli fill e15 baseX":
+            self.value = "baseX"
+            return CommandResult(command, 0, "Filled", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [
+                    f'textbox "Value" : "{self.value}" [ref=e15]',
+                    'generic "Requirement: include the exact public value."',
+                ],
+            ),
+            "",
+        )
+
+
+class SpeculativeVariantPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/missing", "max_chars": "12000"},
+                "Try a public evidence source first.",
+            )
+        if step == 2:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "The lookup failed, so I will try the most likely candidate suffix.",
+            )
+        if step == 3:
+            self.testcase.assertIn("Speculative variant fill guard", message)
+            self.testcase.assertIn("Gather stronger evidence", message)
+            return _tool(
+                "finish",
+                {"reason": "Speculative fill was blocked."},
+                "Guard behavior verified.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        pass
+
+
+class EvidenceRecoveredVariantPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/missing", "max_chars": "12000"},
+                "Try a public evidence source first.",
+            )
+        if step == 2:
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/value", "max_chars": "12000"},
+                "Use a different public evidence source.",
+            )
+        if step == 3:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "The latest lookup found likely evidence, so append the short value.",
+            )
+        if step == 4:
+            return _tool(
+                "finish",
+                {"reason": "Evidence-backed fill was allowed."},
+                "Guard behavior verified.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -852,6 +980,82 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_speculative_variant_fill_after_failed_lookup_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = SpeculativeVariantPlanner(self)
+            executor = SpeculativeVariantExecutor()
+            loop = DecisionLoop(
+                task="Complete a stateful requirement form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=lambda url, max_chars: {
+                    "status": "error",
+                    "url": url,
+                    "error": "not found",
+                },
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli fill e15 baseX", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "fetch_url")
+            self.assertEqual(actions[1]["execution_result"], "skipped")
+            self.assertEqual(actions[1]["reason"], "speculative_variant_fill")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_short_variant_fill_after_successful_latest_lookup_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = EvidenceRecoveredVariantPlanner(self)
+            executor = SpeculativeVariantExecutor()
+
+            def url_fetcher(url: str, max_chars: int) -> dict:
+                if url.endswith("/missing"):
+                    return {"status": "error", "url": url, "error": "not found"}
+                return {
+                    "status": "ok",
+                    "url": url,
+                    "content_type": "text/plain",
+                    "text": "value=X",
+                    "chars": 7,
+                    "truncated": False,
+                }
+
+            loop = DecisionLoop(
+                task="Complete a stateful requirement form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 5, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=url_fetcher,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertIn("playwright-cli fill e15 baseX", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[2]["execution_result"], "ok")
+            self.assertNotEqual(actions[2].get("reason"), "speculative_variant_fill")
+            self.assertEqual(actions[-1]["command"], "finish")
+
     def test_fetch_url_returns_text_without_browser_navigation(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
