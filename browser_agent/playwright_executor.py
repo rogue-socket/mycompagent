@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 
@@ -64,6 +66,9 @@ class PlaywrightExecutor:
             # the useful pre-error output (e.g. "### Ran Playwright code").
             stdout = stdout.split("### Error", 1)[0].strip()
 
+        if returncode == 0 and _is_screenshot_command(command):
+            stdout = _append_screenshot_ocr(stdout)
+
         return CommandResult(
             command=" ".join(args),
             returncode=returncode,
@@ -105,3 +110,55 @@ def _has_session_flag(args: Iterable[str]) -> bool:
         if arg == "-s" and idx + 1 < len(args):
             return True
     return False
+
+
+def _is_screenshot_command(command: str) -> bool:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+    return len(parts) >= 2 and parts[0] == "playwright-cli" and parts[1] == "screenshot"
+
+
+def _append_screenshot_ocr(stdout: str) -> str:
+    image_path = _screenshot_path_from_stdout(stdout)
+    if not image_path:
+        return stdout
+
+    tesseract = shutil.which("tesseract") or _common_tesseract_path()
+    if not tesseract:
+        return f"{stdout}\n\n### OCR\nUnavailable: tesseract not found."
+
+    try:
+        proc = subprocess.run(
+            [tesseract, str(image_path), "stdout", "--psm", "6"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"{stdout}\n\n### OCR\nUnavailable: {exc}"
+
+    text = proc.stdout.strip()
+    if proc.returncode != 0:
+        error = proc.stderr.strip() or f"tesseract exited {proc.returncode}"
+        return f"{stdout}\n\n### OCR\nUnavailable: {error[:300]}"
+    if not text:
+        return f"{stdout}\n\n### OCR\nNo text detected."
+    return f"{stdout}\n\n### OCR\n{text[:2000]}"
+
+
+def _screenshot_path_from_stdout(stdout: str) -> Path | None:
+    for line in stdout.splitlines():
+        if "[Screenshot of viewport](" in line:
+            raw_path = line.split("[Screenshot of viewport](", 1)[1].split(")", 1)[0]
+            return Path(raw_path)
+    return None
+
+
+def _common_tesseract_path() -> str | None:
+    candidate = Path("/opt/homebrew/bin/tesseract")
+    if candidate.exists():
+        return str(candidate)
+    return None

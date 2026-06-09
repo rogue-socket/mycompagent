@@ -124,3 +124,52 @@ class TestStdoutErrorDetection:
         assert result.returncode == 1
         assert result.stdout == ""
         assert "frame was detached" in result.stderr
+
+    @patch("browser_agent.playwright_executor.shutil.which")
+    @patch("browser_agent.playwright_executor.subprocess.run")
+    def test_screenshot_output_includes_ocr_text(self, mock_run, mock_which):
+        """Screenshot commands append OCR text so planners can read image-only state."""
+        mock_which.return_value = "/usr/bin/tesseract"
+        mock_run.side_effect = [
+            _fake_proc(
+                stdout=(
+                    "### Result\n"
+                    "- [Screenshot of viewport](.playwright-cli/page.png)\n"
+                    "### Page\n- Page URL: https://example.com"
+                ),
+                returncode=0,
+            ),
+            _fake_proc(stdout="captcha ABCD\n", returncode=0),
+        ]
+        executor = PlaywrightExecutor()
+        result = executor.run("playwright-cli screenshot")
+
+        assert result.returncode == 0
+        assert "### OCR\ncaptcha ABCD" in result.stdout
+        mock_run.assert_any_call(
+            ["/usr/bin/tesseract", ".playwright-cli/page.png", "stdout", "--psm", "6"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    @patch("browser_agent.playwright_executor._common_tesseract_path")
+    @patch("browser_agent.playwright_executor.shutil.which")
+    @patch("browser_agent.playwright_executor.subprocess.run")
+    def test_screenshot_output_notes_missing_ocr(self, mock_run, mock_which, mock_common):
+        """Missing OCR support is non-fatal and visible to the planner."""
+        mock_which.return_value = None
+        mock_common.return_value = None
+        mock_run.return_value = _fake_proc(
+            stdout=(
+                "### Result\n"
+                "- [Screenshot of viewport](.playwright-cli/page.png)"
+            ),
+            returncode=0,
+        )
+        executor = PlaywrightExecutor()
+        result = executor.run("playwright-cli screenshot")
+
+        assert result.returncode == 0
+        assert "### OCR\nUnavailable: tesseract not found." in result.stdout
