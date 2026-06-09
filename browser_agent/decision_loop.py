@@ -2299,14 +2299,22 @@ def _looks_like_short_visual_value_request(question: str, reason: str) -> bool:
 
 def _short_source_tokens(dom_evidence: str) -> list[str]:
     tokens: list[str] = []
-    for token in re.findall(r"src_token='([^']{2,32})'", dom_evidence or ""):
-        if not re.fullmatch(r"[A-Za-z0-9_-]{2,16}", token):
-            continue
-        if token.lower() in {"error", "checkmark", "refresh", "title", "default"}:
-            continue
-        if token not in tokens:
-            tokens.append(token)
+    for line in (dom_evidence or "").splitlines():
+        for token in (
+            _valid_short_source_token(_quoted_dom_field(line, "src_token")),
+            _short_filename_token(_quoted_dom_field(line, "src")),
+        ):
+            if token and token not in tokens:
+                tokens.append(token)
     return tokens
+
+
+def _valid_short_source_token(token: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{2,16}", token or ""):
+        return ""
+    if token.lower() in {"error", "checkmark", "refresh", "title", "default"}:
+        return ""
+    return token
 
 
 def _looks_like_binary_image_url(url: str) -> bool:
@@ -2321,12 +2329,10 @@ def _looks_like_binary_image_url(url: str) -> bool:
 
 
 def _short_filename_token(url: str) -> str:
+    if url and not _looks_like_binary_image_url(url):
+        return ""
     stem = Path(urlparse(url or "").path).stem
-    if not re.fullmatch(r"[A-Za-z0-9_-]{2,16}", stem or ""):
-        return ""
-    if stem.lower() in {"error", "checkmark", "refresh", "title", "default"}:
-        return ""
-    return stem
+    return _valid_short_source_token(stem)
 
 
 def _looks_speculative(reasoning_text: str) -> bool:

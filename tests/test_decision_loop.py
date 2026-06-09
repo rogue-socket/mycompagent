@@ -660,6 +660,28 @@ class SourceTokenVisualExecutor(VisualCodeExecutor):
         return super()._visible_text()
 
 
+class SourceFilenameTokenVisualExecutor(SourceTokenVisualExecutor):
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command.startswith("playwright-cli run-code "):
+            items = [
+                {
+                    "kind": "image",
+                    "src": "https://assets.example/visual/a1b2c.png",
+                    "nearby": "Enter the code shown in the image",
+                }
+            ]
+            return CommandResult(command, 0, f"### Result\n{json.dumps(items)}", "")
+        if shlex.split(command) == ["playwright-cli", "fill", "e15", "initiala1b2c"]:
+            self.value = "initiala1b2c"
+            return CommandResult(command, 0, "Filled value", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+
 class VisualCodePlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
@@ -3231,6 +3253,46 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             paths.snapshots.mkdir(parents=True)
             planner = SourceTokenVisualPlanner(self)
             executor = SourceTokenVisualExecutor()
+            loop = DecisionLoop(
+                task="Pass the visual challenge.",
+                mode="auto",
+                planner=planner,
+                config={
+                    "max_steps": 4,
+                    "max_errors": 1,
+                    "min_visible_text": 0,
+                    "allow_human_input": True,
+                },
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/visual-challenge.html",
+                open_args=[],
+                debug=False,
+                human_input=lambda prompt: (_ for _ in ()).throw(
+                    AssertionError("human input should not be called")
+                ),
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "ask_human")
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "source_token_available")
+            self.assertEqual(
+                shlex.split(actions[1]["command"]),
+                ["playwright-cli", "fill", "e15", "initiala1b2c"],
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_ask_human_skipped_when_image_filename_token_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = SourceTokenVisualPlanner(self)
+            executor = SourceFilenameTokenVisualExecutor()
             loop = DecisionLoop(
                 task="Pass the visual challenge.",
                 mode="auto",
