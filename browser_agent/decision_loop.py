@@ -731,6 +731,29 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                stale_ref_warning = _missing_action_ref_warning(
+                    parsed_action,
+                    snapshot_state.elements,
+                    interpreter_state.url,
+                )
+                if stale_ref_warning:
+                    self.last_step_error = stale_ref_warning
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "ref_not_in_current_snapshot",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 current_tab_noop = _current_tab_selection_noop(
                     parsed_action,
                     snapshot_state.raw_text,
@@ -1546,6 +1569,43 @@ def _prefer_last_matching_dom_node(element: Any | None) -> bool:
     description = (getattr(element, "description", "") or "").strip().lower()
     child_text = (getattr(element, "child_text", "") or "").strip()
     return bool(child_text) and description in {"generic", "generic [cursor=pointer]"}
+
+
+def _missing_action_ref_warning(
+    parsed_action: Any,
+    elements: list[Any],
+    current_url: str,
+) -> str:
+    missing_refs = [
+        ref for ref in _action_refs(parsed_action) if _element_by_ref(elements, ref) is None
+    ]
+    if not missing_refs:
+        return ""
+    refs = ", ".join(missing_refs)
+    return (
+        f"Stale element-ref guard: ref(s) {refs} are not present in the current "
+        f"page snapshot at {current_url or 'the current page'}. Do not execute this "
+        "action. Use only refs visible in the current page state; if the intended "
+        "control is on another tab or page, switch back or navigate there first, "
+        "then use the fresh refs from that page."
+    )
+
+
+def _action_refs(parsed_action: Any) -> list[str]:
+    if parsed_action.command in {
+        "click",
+        "dblclick",
+        "hover",
+        "check",
+        "uncheck",
+        "fill",
+        "select",
+        "upload",
+    }:
+        return parsed_action.args[:1]
+    if parsed_action.command == "drag":
+        return parsed_action.args[:2]
+    return []
 
 
 def _current_tab_selection_noop(parsed_action: Any, snapshot_text: str) -> str:

@@ -940,6 +940,102 @@ class CurrentTabNoopPlanner:
         pass
 
 
+class StaleRefGuardExecutor:
+    def __init__(self) -> None:
+        self.current_tab = 1
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command == "playwright-cli tab-select 0":
+            self.current_tab = 0
+            return CommandResult(
+                command,
+                0,
+                "### Result\n- 0: (current) [Task](https://example.com/task)\n"
+                "- 1: [Lookup](https://lookup.example/data)",
+                "",
+            )
+        if command == "playwright-cli fill e15 baseX":
+            return CommandResult(command, 0, "Filled", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        if self.current_tab == 1:
+            return CommandResult(
+                "playwright-cli snapshot",
+                0,
+                "\n".join(
+                    [
+                        "### Open tabs",
+                        "- 0: [Task](https://example.com/task)",
+                        "- 1: (current) [Lookup](https://lookup.example/data)",
+                        "Page URL: https://lookup.example/data",
+                        "Page Title: Lookup",
+                        "Snapshot",
+                        '  - text "Lookup value: baseX"',
+                    ]
+                )
+                + "\n",
+                "",
+            )
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                ['textbox "Value" : "base" [ref=e15]'],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        if self.current_tab == 1:
+            return "Lookup value: baseX"
+        return "Task value base"
+
+
+class StaleRefGuardPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "Mistakenly use a task-page ref while the lookup tab is current.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Stale element-ref guard", message)
+            self.testcase.assertIn("not present in the current page snapshot", message)
+            return _tool(
+                "tab_select",
+                {"index": "0"},
+                "Return to the task page before using task refs.",
+            )
+        if step == 3:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "Use the fresh task-page ref.",
+            )
+        if step == 4:
+            return _tool("finish", {"reason": "Stale ref was corrected."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 class FetchUrlExecutor:
     def __init__(self) -> None:
         self.commands: list[str] = []
@@ -1816,6 +1912,39 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             actions = _read_jsonl(paths.actions_log)
             self.assertEqual(actions[0]["execution_result"], "skipped")
             self.assertEqual(actions[0]["reason"], "tab_already_current")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_stale_element_ref_is_skipped_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = StaleRefGuardPlanner(self)
+            executor = StaleRefGuardExecutor()
+            loop = DecisionLoop(
+                task="Use lookup evidence to update the task form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 5, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(
+                executor.commands.count("playwright-cli fill e15 baseX"),
+                1,
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "ref_not_in_current_snapshot")
+            self.assertEqual(actions[1]["command"], "playwright-cli tab-select 0")
+            self.assertEqual(actions[2]["command"], "playwright-cli fill e15 baseX")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_stateful_task_tab_rejects_lookup_goto_away_from_task_path(self) -> None:
