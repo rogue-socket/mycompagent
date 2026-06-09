@@ -81,6 +81,9 @@ Prompts:
 - `--safe`: approve every action. Best for first-time flows and logins.
 - `--hybrid`: approves only risky actions (navigation, typing, submissions, destructive clicks).
 - `--auto`: fully autonomous.
+- `--ask-human`: lets `--auto` pause for short human-provided values, such as
+  CAPTCHA text. Safe and hybrid runs allow this by default because they are
+  already interactive.
 
 Examples:
 
