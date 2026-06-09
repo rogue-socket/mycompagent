@@ -20,6 +20,7 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("smallest reversible edit", message)
         self.assertIn("public information", message)
         self.assertIn("Reserve ask_human", message)
+        self.assertIn("switch back to the original task tab", message)
 
     def test_task_relevant_links_are_prioritized_in_message(self) -> None:
         elements = [
@@ -233,6 +234,31 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Variant-loop recovery note:", message)
         self.assertIn("Stop trying more synonyms", message)
         self.assertIn("use browser lookup in a separate tab", message)
+
+    def test_task_tab_recovery_note_after_lookup_ref_failure(self) -> None:
+        state = InterpreterState(
+            url="https://lookup.example/results?q=street",
+            title="Lookup Results",
+            page_type="unknown",
+            clickable_elements=[ClickableElement("e2", "other", "generic result", "", "other")],
+            visible_text="Lookup result says the country is Belgium.",
+            page_summary="Lookup result.",
+        )
+
+        message = build_page_message(
+            state,
+            action_history=[
+                "playwright-cli tab-new https://lookup.example/search",
+                "playwright-cli goto https://lookup.example/results?q=street",
+                "playwright-cli fill e15 old-value",
+            ],
+            last_error="Error: Ref e15 not found in the current page snapshot. Try capturing new snapshot.",
+            task="Complete the interactive form on Example Game.",
+        )
+
+        self.assertIn("Task-tab recovery:", message)
+        self.assertIn("switch back to the tab", message)
+        self.assertIn("Do not click random lookup-page refs", message)
 
 
 if __name__ == "__main__":

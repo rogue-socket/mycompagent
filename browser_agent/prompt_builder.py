@@ -49,6 +49,7 @@ def build_system_instruction(
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
         "- For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints. Before editing a value, compare the current requirements/status lines with the current value, make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.",
         "- If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human. Reserve ask_human for operator-only visual/private values that page evidence and browser lookup cannot obtain.",
+        "- After using another tab or page for lookup, switch back to the original task tab before using task-page element refs or filling task-page controls.",
         "- Use 'draw_circle' when a game asks for a freehand circle on a canvas-like surface.",
         "- Use 'ask_human' when a short value visible to the operator, such as CAPTCHA text, is needed to continue.",
         "- Call 'finish' when the task is complete.",
@@ -249,6 +250,14 @@ def build_page_message(
         sections.insert(2, "Variant-loop recovery note:\n" + variant_note)
 
     if last_error:
+        tab_recovery_note = _task_tab_recovery_note(
+            last_error,
+            state,
+            action_history,
+            task or "",
+        )
+        if tab_recovery_note:
+            sections.append("Task-tab recovery:\n" + tab_recovery_note)
         recovery_note = _custom_control_recovery_note(last_error, selected_elements, task or "")
         if recovery_note:
             sections.append("Custom control recovery:\n" + recovery_note)
@@ -649,6 +658,47 @@ def _variant_guess_recovery_note(
 def _fill_target(action: str) -> str:
     match = re.search(r"\bfill\s+(e\d+)\b", action)
     return match.group(1) if match else ""
+
+
+def _task_tab_recovery_note(
+    last_error: str,
+    state: InterpreterState,
+    action_history: list[str],
+    task: str,
+) -> str:
+    lowered_error = last_error.lower()
+    if not any(
+        marker in lowered_error
+        for marker in (
+            "ref ",
+            "not found in the current page snapshot",
+            "element is not",
+            "not an <input>",
+        )
+    ):
+        return ""
+    if not any(
+        marker in action
+        for action in action_history[-8:]
+        for marker in ("tab-new", "tab_select", "tab-select", "goto http", "go-back")
+    ):
+        return ""
+    task_terms = _task_terms(task, "")
+    current_haystack = f"{state.url} {state.title}".lower()
+    on_task_page = any(term in current_haystack for term in task_terms)
+    has_task_control = any(
+        getattr(element, "element_type", "") == "input"
+        for element in state.clickable_elements
+    )
+    if on_task_page and has_task_control:
+        return ""
+    return (
+        "The failed action looks like it used a task-page ref while the browser is on a "
+        "lookup/result tab or a stale snapshot. Do not click random lookup-page refs or type "
+        "into the lookup page. Use tab_list if needed, switch back to the tab whose URL/title "
+        "matches the original task, wait for its fresh page state, and only then fill a visible "
+        "task-page input ref."
+    )
 
 
 def _looks_like_not_found_page(state: InterpreterState) -> bool:
