@@ -44,6 +44,9 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("reuse it for lookup work", message)
         self.assertIn("iframe-only visual clues", message)
         self.assertIn("Do not use frame-scoped refs", message)
+        self.assertIn("Use 'select_text' to select an exact substring", message)
+        self.assertIn("before replacing or formatting only that substring", message)
+        self.assertIn("Use 'format_selection'", message)
 
     def test_task_relevant_links_are_prioritized_in_message(self) -> None:
         elements = [

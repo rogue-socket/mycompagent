@@ -87,6 +87,18 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertIn("execCommand", action.action)
         self.assertIn("bold", action.action)
 
+    def test_select_text_maps_to_guarded_run_code(self) -> None:
+        action = parse_tool_call(
+            "select_text",
+            {"text": "target value", "occurrence": "2"},
+        )
+
+        self.assertEqual(action.command, "run-code")
+        self.assertIn("target value", action.action)
+        self.assertIn("occurrence = 2", action.action)
+        self.assertIn("document.activeElement", action.action)
+        self.assertIn("setSelectionRange", action.action)
+
     def test_drag_rejects_bad_ref(self) -> None:
         with self.assertRaises(ActionParseError):
             parse_tool_call("drag", {"source_ref": "e1", "target_ref": "bad"})

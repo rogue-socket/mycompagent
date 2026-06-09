@@ -102,6 +102,28 @@ _TOOLS: list[types.FunctionDeclaration] = [
         ),
     ),
     types.FunctionDeclaration(
+        name="select_text",
+        description=(
+            "Select an exact text substring inside the currently focused editable "
+            "field so a later type or format_selection action can preserve the "
+            "rest of the value."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "text": types.Schema(
+                    type="STRING",
+                    description="Exact text substring to select in the focused editable.",
+                ),
+                "occurrence": types.Schema(
+                    type="STRING",
+                    description="Optional 1-based occurrence number. Defaults to 1.",
+                ),
+            },
+            required=["text"],
+        ),
+    ),
+    types.FunctionDeclaration(
         name="scroll",
         description="Scroll the page vertically with the mouse wheel. Positive dy scrolls down; negative dy scrolls up.",
         parameters=types.Schema(
@@ -382,6 +404,8 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
         return _draw_circle_command(args)
     if name == "format_selection":
         return _format_selection_command(args)
+    if name == "select_text":
+        return _select_text_command(args)
 
     cli_name = _CLI_NAME_MAP.get(name, name)
     parts = ["playwright-cli", cli_name]
@@ -492,6 +516,97 @@ def _format_selection_command(args: dict[str, str]) -> str:
     return {{ ok, selectedText: before.slice(0, 200), activeTag: active ? active.tagName : '', html }};
   }}, command);
   return active;
+}}"""
+    return "playwright-cli run-code " + shlex.quote(code)
+
+
+def _select_text_command(args: dict[str, str]) -> str:
+    text = str(args.get("text") or "")
+    occurrence = _int_arg(args.get("occurrence"), default=1, minimum=1, maximum=50)
+    code = f"""async page => {{
+  const targetText = {text!r};
+  const occurrence = {occurrence};
+  const result = await page.evaluate(({{
+    targetText,
+    occurrence,
+  }}) => {{
+    const active = document.activeElement;
+    if (!active) {{
+      throw new Error('No focused editable element');
+    }}
+    if (!targetText) {{
+      throw new Error('select_text requires a non-empty exact text substring');
+    }}
+    const tag = active.tagName;
+    const isTextControl = tag === 'INPUT' || tag === 'TEXTAREA';
+    const isEditable = active.isContentEditable || active.getAttribute('role') === 'textbox';
+    if (!isTextControl && !isEditable) {{
+      throw new Error('Focused element is not editable');
+    }}
+
+    const nthIndex = (haystack, needle, wanted) => {{
+      let from = 0;
+      for (let seen = 1; seen <= wanted; seen += 1) {{
+        const index = haystack.indexOf(needle, from);
+        if (index < 0) return -1;
+        if (seen === wanted) return index;
+        from = index + needle.length;
+      }}
+      return -1;
+    }};
+
+    if (isTextControl && typeof active.setSelectionRange === 'function') {{
+      const value = String(active.value || '');
+      const start = nthIndex(value, targetText, occurrence);
+      if (start < 0) {{
+        throw new Error('Exact text substring not found in focused editable');
+      }}
+      active.focus();
+      active.setSelectionRange(start, start + targetText.length);
+      return {{ selectedText: value.slice(start, start + targetText.length), start }};
+    }}
+
+    const walker = document.createTreeWalker(active, NodeFilter.SHOW_TEXT);
+    let remainingOffset = 0;
+    const fullText = active.innerText || active.textContent || '';
+    const start = nthIndex(fullText, targetText, occurrence);
+    if (start < 0) {{
+      throw new Error('Exact text substring not found in focused editable');
+    }}
+    const end = start + targetText.length;
+    let startNode = null;
+    let startOffset = 0;
+    let endNode = null;
+    let endOffset = 0;
+    while (walker.nextNode()) {{
+      const node = walker.currentNode;
+      const length = node.textContent.length;
+      const nodeStart = remainingOffset;
+      const nodeEnd = remainingOffset + length;
+      if (!startNode && start >= nodeStart && start <= nodeEnd) {{
+        startNode = node;
+        startOffset = start - nodeStart;
+      }}
+      if (!endNode && end >= nodeStart && end <= nodeEnd) {{
+        endNode = node;
+        endOffset = end - nodeStart;
+        break;
+      }}
+      remainingOffset = nodeEnd;
+    }}
+    if (!startNode || !endNode) {{
+      throw new Error('Could not map text substring to editable text nodes');
+    }}
+    const range = document.createRange();
+    range.setStart(startNode, startOffset);
+    range.setEnd(endNode, endOffset);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    active.focus();
+    return {{ selectedText: String(selection).slice(0, 200), start }};
+  }}, {{ targetText, occurrence }});
+  return result;
 }}"""
     return "playwright-cli run-code " + shlex.quote(code)
 

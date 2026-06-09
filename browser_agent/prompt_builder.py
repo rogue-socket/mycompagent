@@ -46,6 +46,7 @@ def build_system_instruction(
         "- Use 'fill' to enter text into a specific input field. Use 'type' only for the focused element.",
         "- If 'fill' fails, use click(ref) to focus the input first, then type(text) to enter the text.",
         "- Use 'press' for keyboard keys like Enter, Tab, Escape.",
+        "- Use 'select_text' to select an exact substring in the focused editable before replacing or formatting only that substring.",
         "- Use 'format_selection' for rich-text formatting after focusing an editable field and selecting text.",
         "- If the current editable has rich HTML, avoid plain fill actions that replace the whole value; use targeted typing, selection-based formatting, or another formatting-preserving edit.",
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
