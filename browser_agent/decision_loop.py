@@ -113,6 +113,8 @@ class DecisionLoop:
                         self.stop_reason = "browser_not_installed"
                         self._log(f"Step {self.step}: {error_text}")
                         break
+                    if self._recover_snapshot_timeout_after_failed_navigation(error_text):
+                        continue
                     raise PlaywrightExecutionError(error_text)
                 self._log(self._format_command_result("snapshot", snapshot_result))
 
@@ -781,6 +783,56 @@ class DecisionLoop:
         result = self.executor.run(open_command)
         if result.returncode != 0:
             raise PlaywrightExecutionError(result.stderr or "open failed")
+
+    def _recover_snapshot_timeout_after_failed_navigation(self, error_text: str) -> bool:
+        lowered = error_text.lower()
+        if "timeout" not in lowered or "snapshot" not in lowered:
+            return False
+        if (
+            not self.action_history
+            or not self.action_history[-1].startswith("playwright-cli goto ")
+        ):
+            return False
+        if self.last_action_ok:
+            return False
+
+        recovery_command = "playwright-cli go-back"
+        self._log(
+            f"Step {self.step}: snapshot timed out after failed navigation; "
+            "going back once before retrying"
+        )
+        recovery_result = self.executor.run(recovery_command)
+        recovery_status = "ok" if recovery_result.returncode == 0 else "error"
+        self._log(
+            self._format_command_result(
+                "auto-recovery go back after snapshot timeout",
+                recovery_result,
+            )
+        )
+        append_jsonl(
+            self.paths.actions_log,
+            {
+                "step": self.step,
+                "command": recovery_command,
+                "approval_status": "auto_recovery",
+                "execution_result": recovery_status,
+                "trigger": "snapshot_timeout_after_failed_navigation",
+                "stdout": recovery_result.stdout,
+                "stderr": recovery_result.stderr,
+            },
+        )
+        self.action_history.append(recovery_command)
+        self.last_action_ok = recovery_status == "ok"
+        self.last_step_error = (
+            "The fresh page snapshot timed out after the previous navigation failed. "
+            "The browser went back once; use the updated page state and avoid repeating "
+            "the same failed navigation."
+        )
+        if recovery_status == "ok":
+            return True
+
+        self.errors += 1
+        return False
 
     def _human_input_allowed(self) -> bool:
         return bool(self.config.get("allow_human_input", self.mode != "auto"))

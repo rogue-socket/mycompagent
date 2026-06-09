@@ -20,6 +20,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("smallest reversible edit", message)
         self.assertIn("public information", message)
         self.assertIn("Reserve ask_human", message)
+        self.assertIn("A new tab opens blank", message)
+        self.assertIn("Stay there until you have loaded and extracted", message)
         self.assertIn("switch back to the original task tab", message)
         self.assertIn("iframe-only visual clues", message)
         self.assertIn("Do not use frame-scoped refs", message)

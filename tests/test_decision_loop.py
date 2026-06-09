@@ -521,6 +521,75 @@ class CaptchaPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class SnapshotTimeoutRecoveryExecutor:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.bad_navigation = False
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps('Ready')}", "")
+        if command == "playwright-cli goto https://example.com/asset.svg":
+            self.bad_navigation = True
+            return CommandResult(
+                command,
+                1,
+                "",
+                "TimeoutError: page._snapshotForAI: Timeout 5000ms exceeded.",
+            )
+        if command == "playwright-cli go-back":
+            self.bad_navigation = False
+            return CommandResult(command, 0, "Went back", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        if self.bad_navigation:
+            return CommandResult(
+                "playwright-cli snapshot",
+                1,
+                "",
+                "TimeoutError: page._snapshotForAI: Timeout 5000ms exceeded.",
+            )
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _workflow_snapshot(['textbox "Value" : "Ready" [ref=e15]']),
+            "",
+        )
+
+
+class SnapshotTimeoutRecoveryPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "goto",
+                {"url": "https://example.com/asset.svg"},
+                "Try inspecting the asset directly.",
+            )
+        if step == 2:
+            self.testcase.assertIn("went back once", message)
+            self.testcase.assertIn("avoid repeating the same failed navigation", message)
+            return _tool(
+                "finish",
+                {"reason": "Recovered to the task page."},
+                "The loop recovered from the bad navigation.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -533,6 +602,39 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_snapshot_timeout_after_failed_navigation_goes_back_and_continues(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = SnapshotTimeoutRecoveryPlanner(self)
+            executor = SnapshotTimeoutRecoveryExecutor()
+            loop = DecisionLoop(
+                task="Inspect an asset without losing the original task page.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 3, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/task.html",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertIn("playwright-cli go-back", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "error")
+            self.assertEqual(actions[1]["approval_status"], "auto_recovery")
+            self.assertEqual(actions[1]["command"], "playwright-cli go-back")
+            self.assertEqual(
+                actions[1]["trigger"],
+                "snapshot_timeout_after_failed_navigation",
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
     def test_planner_log_payload_includes_metrics_and_artifact_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             paths = RunPaths(Path(tmp))

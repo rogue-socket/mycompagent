@@ -56,7 +56,7 @@ Allowed tool names and arguments:
 - upload: {"ref": "e1", "file_path": "/path/to/file"}
 - goto: {"url": "https://example.com"}
 - go_back/go_forward/reload/snapshot/screenshot/tab_list/close: {}
-- tab_new: {"url": "https://example.com"} or {}
+- tab_new: {} to open a blank tab; then goto with a URL in that current tab
 - tab_close/tab_select: {"index": "0"}
 - state_save/state_load: {"path": "auth.json"}
 - ask_human: {"question": "short specific question", "reason": "why this is needed"}
@@ -70,7 +70,8 @@ Rules:
 - Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.
 - For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints; make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.
 - If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human; reserve ask_human for operator-only visual/private values.
-- After using another tab or page for lookup, switch back to the original task tab before using task-page element refs or filling task-page controls.
+- A new tab opens blank. If you need a lookup URL, call tab_new, then call goto in that current blank tab. Stay there until you have loaded and extracted the lookup result.
+- After a lookup result is loaded and the needed value is extracted, switch back to the original task tab before using task-page element refs or filling task-page controls.
 - For iframe-only visual clues, inspect iframe src/title/nearby DOM evidence and use public lookup when possible; do not use frame-scoped refs as normal element refs unless they are listed as current clickable elements.
 - Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
 - Use format_selection for rich-text formatting on selected editable text instead of clicking toolbar buttons when possible.

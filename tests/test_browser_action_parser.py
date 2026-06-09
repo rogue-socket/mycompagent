@@ -20,6 +20,12 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertEqual(action.command, "goto")
         self.assertIn("https://example.com", action.action)
 
+    def test_tab_new_opens_blank_even_when_url_is_supplied(self) -> None:
+        action = parse_tool_call("tab_new", {"url": "https://example.com"})
+        self.assertEqual(action.command, "tab-new")
+        self.assertEqual(action.args, [])
+        self.assertEqual(action.action, "playwright-cli tab-new")
+
     def test_press(self) -> None:
         action = parse_tool_call("press", {"key": "Enter"})
         self.assertEqual(action.command, "press")

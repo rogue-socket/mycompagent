@@ -258,7 +258,7 @@ _TOOLS: list[types.FunctionDeclaration] = [
     ),
     types.FunctionDeclaration(
         name="tab_new",
-        description="Open a new browser tab, optionally at a URL.",
+        description="Open a new blank browser tab. To load a URL in it, call goto next.",
         parameters=types.Schema(
             type="OBJECT",
             properties={
@@ -389,9 +389,7 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
             url = "https://" + url
         parts.append(url)
     elif name in {"tab_new", "tab_close", "tab_select"}:
-        if name == "tab_new" and args.get("url"):
-            parts.append(args["url"])
-        elif name == "tab_close" and args.get("index"):
+        if name == "tab_close" and args.get("index"):
             parts.append(args["index"])
         elif name == "tab_select":
             parts.append(args["index"])
