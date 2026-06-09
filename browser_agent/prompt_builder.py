@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import html
 import re
 import shlex
 
@@ -230,6 +232,7 @@ def build_page_message(
         evidence_text or "",
     )
     bad_url_guess_note = _bad_url_guess_note(state, action_history, selected_elements)
+    status_summary = _current_status_summary(state.dom_evidence)
 
     sections = [
         f"Current page:\nURL: {state.url}\nTitle: {state.title}\nType: {state.page_type}",
@@ -238,6 +241,9 @@ def build_page_message(
         "Visible text (truncated):\n" + (state.visible_text[:800] if state.visible_text else "(none)"),
         "Previous actions:\n" + ("\n".join(history_lines) if history_lines else "(none)"),
     ]
+
+    if status_summary:
+        sections.insert(2, "Current status indicators:\n" + status_summary)
 
     if state.dom_evidence:
         sections.insert(3, "DOM evidence:\n" + state.dom_evidence)
@@ -350,6 +356,59 @@ def _format_element_line(
 ) -> str:
     suffix = f" -> {href}" if href else ""
     return f"{element_id}: [{area}] {element_type} - {text}{suffix}"
+
+
+def _current_status_summary(dom_evidence: str) -> str:
+    statuses = _status_indicators_from_dom_evidence(dom_evidence)
+    if not statuses:
+        return ""
+
+    failing = [label for label, status in statuses if status == "error"]
+    satisfied = [label for label, status in statuses if status == "success"]
+    sections: list[str] = []
+    if failing:
+        sections.append("Failing:\n" + "\n".join(f"- {label}" for label in failing[:8]))
+    if satisfied:
+        sections.append(
+            "Satisfied:\n" + "\n".join(f"- {label}" for label in satisfied[:8])
+        )
+    return "\n".join(sections)
+
+
+def _status_indicators_from_dom_evidence(dom_evidence: str) -> list[tuple[str, str]]:
+    indicators: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for line in (dom_evidence or "").splitlines():
+        status = _quoted_dom_field(line, "status")
+        if status not in {"success", "error"}:
+            continue
+        label = _normalize_status_label(_quoted_dom_field(line, "nearby"))
+        if not label:
+            continue
+        item = (label, status)
+        if item in seen:
+            continue
+        seen.add(item)
+        indicators.append(item)
+    return indicators
+
+
+def _quoted_dom_field(line: str, field: str) -> str:
+    match = re.search(
+        rf"\b{re.escape(field)}=('(?:[^'\\]|\\.)*')",
+        line or "",
+    )
+    if not match:
+        return ""
+    raw_value = match.group(1)
+    try:
+        return str(ast.literal_eval(raw_value))
+    except (SyntaxError, ValueError):
+        return raw_value[1:-1]
+
+
+def _normalize_status_label(label: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(label or "")).strip()[:240]
 
 
 def _select_clickable_elements(

@@ -121,6 +121,27 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("DOM evidence:", message)
         self.assertIn("captcha.png", message)
 
+    def test_status_summary_lists_failing_before_satisfied(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/form",
+            title="Form",
+            page_type="form",
+            clickable_elements=[],
+            visible_text="Requirement A. Requirement B.",
+            page_summary="Requirement form.",
+            dom_evidence=(
+                "- status_indicator: status='success' nearby='Requirement A is valid.'\n"
+                "- status_indicator: status='error' nearby='Requirement B needs work.'"
+            ),
+        )
+
+        message = build_page_message(state, action_history=[])
+
+        self.assertIn("Current status indicators:", message)
+        self.assertIn("Failing:\n- Requirement B needs work.", message)
+        self.assertIn("Satisfied:\n- Requirement A is valid.", message)
+        self.assertLess(message.index("Failing:"), message.index("Satisfied:"))
+
     def test_last_observation_is_included_without_failure_language(self) -> None:
         state = InterpreterState(
             url="https://example.com/form",
