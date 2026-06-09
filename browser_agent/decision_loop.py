@@ -433,6 +433,38 @@ class DecisionLoop:
                     reason = tool_result.tool_args.get("reason", "").strip()
                     if not question:
                         question = "Please provide the missing information needed to continue."
+                    source_token_warning = _source_token_human_input_warning(
+                        question,
+                        reason,
+                        getattr(interpreter_state, "dom_evidence", "") or "",
+                    )
+                    if source_token_warning:
+                        self.last_step_error = source_token_warning
+                        self._log(
+                            "Step "
+                            f"{self.step}: ask_human skipped — source token evidence available"
+                        )
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "ask_human",
+                                "approval_status": "n/a",
+                                "execution_result": "skipped",
+                                "reason": "source_token_available",
+                                "question": question,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("ask_human skipped: " + question)
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": source_token_warning},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     if not self._human_input_allowed():
                         error = (
                             "Human input was requested, but it is disabled for this run. "
@@ -1534,6 +1566,62 @@ def _transient_interstitial_warning(interpreter_state: Any) -> str:
             "settle instead of repeatedly reloading or spending planner calls."
         )
     return ""
+
+
+def _source_token_human_input_warning(
+    question: str,
+    reason: str,
+    dom_evidence: str,
+) -> str:
+    if not _looks_like_short_visual_value_request(question, reason):
+        return ""
+    tokens = _short_source_tokens(dom_evidence)
+    if not tokens:
+        return ""
+    token_list = ", ".join(repr(token) for token in tokens[:3])
+    return (
+        "Human input guard: current page evidence already exposes short source "
+        f"token(s) near image evidence: {token_list}. Before asking the operator, "
+        "try the relevant token as page evidence for the short visual value, then "
+        "verify the visible requirement/status. Ask the human only if that evidence "
+        "is rejected or ambiguous."
+    )
+
+
+def _looks_like_short_visual_value_request(question: str, reason: str) -> bool:
+    text = f"{question}\n{reason}".lower()
+    visual_markers = (
+        "visual",
+        "image",
+        "shown",
+        "displayed",
+        "appears",
+        "visible",
+    )
+    value_markers = (
+        "code",
+        "text",
+        "characters",
+        "chars",
+        "letters",
+        "value",
+        "string",
+    )
+    return any(marker in text for marker in visual_markers) and any(
+        marker in text for marker in value_markers
+    )
+
+
+def _short_source_tokens(dom_evidence: str) -> list[str]:
+    tokens: list[str] = []
+    for token in re.findall(r"src_token='([^']{2,32})'", dom_evidence or ""):
+        if not re.fullmatch(r"[A-Za-z0-9_-]{2,16}", token):
+            continue
+        if token.lower() in {"error", "checkmark", "refresh", "title", "default"}:
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 def _looks_speculative(reasoning_text: str) -> bool:

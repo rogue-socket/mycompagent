@@ -565,6 +565,51 @@ class VisualCodeExecutor:
         return "Visual challenge\nEnter the code shown in the image"
 
 
+class SourceTokenVisualExecutor(VisualCodeExecutor):
+    supports_dom_evidence = True
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command.startswith("playwright-cli run-code "):
+            items = [
+                {
+                    "kind": "image",
+                    "src": "https://assets.example/visual/a1b2c.png",
+                    "src_token": "a1b2c",
+                    "nearby": "Enter the code shown in the image",
+                }
+            ]
+            return CommandResult(command, 0, f"### Result\n{json.dumps(items)}", "")
+        if shlex.split(command) == ["playwright-cli", "fill", "e15", "initiala1b2c"]:
+            self.value = "initiala1b2c"
+            return CommandResult(command, 0, "Filled value", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        if self.value.endswith("a1b2c"):
+            return CommandResult(
+                "playwright-cli snapshot",
+                0,
+                _workflow_snapshot(
+                    [
+                        f'textbox "Enter code" : "{self.value}" [ref=e15]',
+                        'text "Visual challenge passed"',
+                    ]
+                ),
+                "",
+            )
+        return super().snapshot()
+
+    def _visible_text(self) -> str:
+        if self.value.endswith("a1b2c"):
+            return "Visual challenge passed"
+        return super()._visible_text()
+
+
 class VisualCodePlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
@@ -590,6 +635,43 @@ class VisualCodePlanner:
                 "fill",
                 {"ref": "e15", "value": "initialABCD"},
                 "Use the human-provided code.",
+            )
+        if step == 3:
+            self.testcase.assertIn("Visual challenge passed", message)
+            return _tool("finish", {"reason": "Visual challenge passed."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class SourceTokenVisualPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "ask_human",
+                {
+                    "question": "What short visual code is shown?",
+                    "reason": "The required short visual code is not present in visible text.",
+                },
+                "Ask the operator for the visual code.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["tool_name"], "ask_human")
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            self.testcase.assertIn("short source token", self.tool_results[-1]["error"])
+            self.testcase.assertIn("a1b2c", self.tool_results[-1]["error"])
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "initiala1b2c"},
+                "Use the page-evidence source token before asking the operator.",
             )
         if step == 3:
             self.testcase.assertIn("Visual challenge passed", message)
@@ -1825,6 +1907,46 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(
                 shlex.split(actions[1]["command"]),
                 ["playwright-cli", "fill", "e15", "initialABCD"],
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_ask_human_skipped_when_source_token_evidence_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = SourceTokenVisualPlanner(self)
+            executor = SourceTokenVisualExecutor()
+            loop = DecisionLoop(
+                task="Pass the visual challenge.",
+                mode="auto",
+                planner=planner,
+                config={
+                    "max_steps": 4,
+                    "max_errors": 1,
+                    "min_visible_text": 0,
+                    "allow_human_input": True,
+                },
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/visual-challenge.html",
+                open_args=[],
+                debug=False,
+                human_input=lambda prompt: (_ for _ in ()).throw(
+                    AssertionError("human input should not be called")
+                ),
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "ask_human")
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "source_token_available")
+            self.assertEqual(
+                shlex.split(actions[1]["command"]),
+                ["playwright-cli", "fill", "e15", "initiala1b2c"],
             )
             self.assertEqual(actions[-1]["command"], "finish")
 
