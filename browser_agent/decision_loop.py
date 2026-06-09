@@ -2188,6 +2188,12 @@ def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
     if _looks_html_text(text, content_type):
         text = _html_to_readable_text(text)
         text_format = "html_text"
+    elif _looks_svg_text(text, content_type):
+        text = _svg_to_readable_text(text)
+        text_format = "svg_text"
+    elif _looks_xml_text(text, content_type):
+        text = _xml_to_readable_text(text)
+        text_format = "xml_text"
     text_truncated = len(text) > limit
     text = text[:limit]
     return {
@@ -2230,6 +2236,16 @@ def _looks_html_text(text: str, content_type: str) -> bool:
     return bool(re.search(r"<(?:html|head|body|title|script|style|div|span)\b", text[:2000], re.I))
 
 
+def _looks_svg_text(text: str, content_type: str) -> bool:
+    lowered_type = (content_type or "").lower()
+    return "svg" in lowered_type or bool(re.search(r"<svg\b", text[:2000], re.I))
+
+
+def _looks_xml_text(text: str, content_type: str) -> bool:
+    lowered_type = (content_type or "").lower()
+    return "xml" in lowered_type or bool(re.search(r"<\?xml\b|<[A-Za-z][\w:.-]*(?:\s|>)", text[:2000]))
+
+
 def _html_to_readable_text(text: str) -> str:
     cleaned = re.sub(r"(?is)<script\b.*?</script>", " ", text)
     cleaned = re.sub(r"(?is)<style\b.*?</style>", " ", cleaned)
@@ -2240,6 +2256,64 @@ def _html_to_readable_text(text: str) -> str:
     cleaned = html.unescape(cleaned)
     lines = [re.sub(r"\s+", " ", line).strip() for line in cleaned.splitlines()]
     return "\n".join(line for line in lines if line)
+
+
+def _svg_to_readable_text(text: str) -> str:
+    return _markup_to_readable_text(
+        text,
+        preferred_tags=("title", "desc", "text", "tspan"),
+        include_attrs=("aria-label", "alt", "title", "id", "href", "xlink:href"),
+    )
+
+
+def _xml_to_readable_text(text: str) -> str:
+    return _markup_to_readable_text(
+        text,
+        preferred_tags=("title", "name", "label", "description", "desc", "text"),
+        include_attrs=("aria-label", "alt", "title", "id", "name", "href"),
+    )
+
+
+def _markup_to_readable_text(
+    text: str,
+    *,
+    preferred_tags: tuple[str, ...],
+    include_attrs: tuple[str, ...],
+) -> str:
+    cleaned = re.sub(r"(?is)<script\b.*?</script>", " ", text)
+    cleaned = re.sub(r"(?is)<style\b.*?</style>", " ", cleaned)
+    snippets: list[str] = []
+    seen: set[str] = set()
+
+    for tag in preferred_tags:
+        pattern = rf"(?is)<(?:[\w.-]+:)?{re.escape(tag)}\b[^>]*>(.*?)</(?:[\w.-]+:)?{re.escape(tag)}>"
+        for match in re.finditer(pattern, cleaned):
+            value = _strip_markup_text(match.group(1))
+            if value and value not in seen:
+                seen.add(value)
+                snippets.append(value)
+
+    for attr in include_attrs:
+        pattern = rf"""\b{re.escape(attr)}\s*=\s*(['"])(.*?)\1"""
+        for match in re.finditer(pattern, cleaned, re.I | re.S):
+            value = html.unescape(match.group(2)).strip()
+            value = re.sub(r"\s+", " ", value)
+            if not value or len(value) > 240 or value in seen:
+                continue
+            seen.add(value)
+            snippets.append(f"{attr}: {value}")
+
+    if not snippets:
+        stripped = _strip_markup_text(cleaned)
+        if stripped:
+            snippets.append(stripped)
+    return "\n".join(snippets[:80])
+
+
+def _strip_markup_text(text: str) -> str:
+    stripped = re.sub(r"(?is)<[^>]+>", " ", text)
+    stripped = html.unescape(stripped)
+    return re.sub(r"\s+", " ", stripped).strip()
 
 
 def _hash_text(text: str) -> str:

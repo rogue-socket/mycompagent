@@ -9,7 +9,9 @@ from browser_agent.decision_loop import (
     RunResult,
     _html_to_readable_text,
     _looks_html_text,
+    _looks_svg_text,
     _status_indicators_from_dom_evidence,
+    _svg_to_readable_text,
 )
 from browser_agent.logger import RunPaths, append_jsonl
 from browser_agent.memory import Lesson, MemoryStore
@@ -1869,6 +1871,26 @@ class DecisionLoopMetadataTests(unittest.TestCase):
         self.assertIn("Current value: Waxing Crescent.", text)
         self.assertNotIn("window.noise", text)
         self.assertNotIn("<p>", text)
+
+    def test_fetch_svg_text_is_normalized_for_planner_evidence(self) -> None:
+        raw_svg = """
+        <svg xmlns="http://www.w3.org/2000/svg" aria-label="Example board">
+          <title>Example Position</title>
+          <desc>Choose the best move from this diagram.</desc>
+          <path d="M 10 10 L 200 200 Z"></path>
+          <text>Candidate: move token</text>
+        </svg>
+        """
+
+        text = _svg_to_readable_text(raw_svg)
+
+        self.assertTrue(_looks_svg_text(raw_svg, "image/svg+xml"))
+        self.assertIn("Example Position", text)
+        self.assertIn("Choose the best move from this diagram.", text)
+        self.assertIn("Candidate: move token", text)
+        self.assertIn("aria-label: Example board", text)
+        self.assertNotIn("M 10 10", text)
+        self.assertNotIn("<path", text)
 
     def test_speculative_variant_fill_after_failed_lookup_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
