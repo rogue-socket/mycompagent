@@ -682,6 +682,40 @@ class SourceTokenVisualPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class SourceTokenFetchPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://assets.example/visual/a1b2c.png", "max_chars": "4000"},
+                "Try to fetch the visible image asset.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["tool_name"], "fetch_url")
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            self.testcase.assertIn("Binary visual asset guard", message)
+            self.testcase.assertIn("a1b2c", message)
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "initiala1b2c"},
+                "Use the page-evidence source token before asking the operator.",
+            )
+        if step == 3:
+            self.testcase.assertIn("Visual challenge passed", message)
+            return _tool("finish", {"reason": "Visual challenge passed."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 class HumanInputUnavailablePlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
@@ -2419,6 +2453,43 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(result.stop_reason, "completed")
             actions = _read_jsonl(paths.actions_log)
             self.assertEqual(actions[0]["command"], "ask_human")
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "source_token_available")
+            self.assertEqual(
+                shlex.split(actions[1]["command"]),
+                ["playwright-cli", "fill", "e15", "initiala1b2c"],
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_fetch_binary_image_skipped_when_source_token_evidence_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = SourceTokenFetchPlanner(self)
+            executor = SourceTokenVisualExecutor()
+            loop = DecisionLoop(
+                task="Pass the visual challenge.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/visual-challenge.html",
+                open_args=[],
+                debug=False,
+                url_fetcher=lambda url, max_chars: {
+                    "status": "error",
+                    "url": url,
+                    "error": "binary fetch should have been skipped",
+                },
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "fetch_url")
             self.assertEqual(actions[0]["execution_result"], "skipped")
             self.assertEqual(actions[0]["reason"], "source_token_available")
             self.assertEqual(

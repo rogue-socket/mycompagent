@@ -585,6 +585,35 @@ class DecisionLoop:
                 # ---- Handle public text fetch tool ----
                 if tool_result.tool_name == "fetch_url":
                     url = tool_result.tool_args.get("url", "").strip()
+                    source_token_fetch_warning = _source_token_fetch_warning(
+                        url,
+                        getattr(interpreter_state, "dom_evidence", "") or "",
+                    )
+                    if source_token_fetch_warning:
+                        self.last_step_error = source_token_fetch_warning
+                        self._log(f"Step {self.step}: fetch_url skipped - {url}")
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "fetch_url",
+                                "approval_status": "n/a",
+                                "execution_result": "skipped",
+                                "reason": "source_token_available",
+                                "url": url,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("fetch_url skipped: " + url)
+                        self.last_action_ok = False
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": source_token_fetch_warning},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     failed_url_warning = self._failed_url_retry_warning(url)
                     if failed_url_warning:
                         self.last_step_error = failed_url_warning
@@ -1875,6 +1904,26 @@ def _source_token_human_input_warning(
     )
 
 
+def _source_token_fetch_warning(url: str, dom_evidence: str) -> str:
+    if not _looks_like_binary_image_url(url):
+        return ""
+    tokens = _short_source_tokens(dom_evidence)
+    if not tokens:
+        return ""
+    filename_token = _short_filename_token(url)
+    if filename_token and filename_token in tokens:
+        tokens = [filename_token] + [token for token in tokens if token != filename_token]
+    token_list = ", ".join(repr(token) for token in tokens[:3])
+    return (
+        "Binary visual asset guard: fetch_url is for text-like public assets and "
+        "cannot read binary images. Current page evidence already exposes short "
+        f"source token(s) near image evidence: {token_list}. If the visible "
+        "requirement asks for a short visual code/text from that image, try the "
+        "relevant token as page evidence and verify the status. Ask the human only "
+        "if the token is rejected or ambiguous and human input is enabled."
+    )
+
+
 def _looks_like_short_visual_value_request(question: str, reason: str) -> bool:
     text = f"{question}\n{reason}".lower()
     visual_markers = (
@@ -1909,6 +1958,26 @@ def _short_source_tokens(dom_evidence: str) -> list[str]:
         if token not in tokens:
             tokens.append(token)
     return tokens
+
+
+def _looks_like_binary_image_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    path = parsed.path.lower()
+    return any(
+        path.endswith(extension)
+        for extension in (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp")
+    )
+
+
+def _short_filename_token(url: str) -> str:
+    stem = Path(urlparse(url or "").path).stem
+    if not re.fullmatch(r"[A-Za-z0-9_-]{2,16}", stem or ""):
+        return ""
+    if stem.lower() in {"error", "checkmark", "refresh", "title", "default"}:
+        return ""
+    return stem
 
 
 def _looks_speculative(reasoning_text: str) -> bool:
