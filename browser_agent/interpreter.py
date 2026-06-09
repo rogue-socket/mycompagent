@@ -500,6 +500,7 @@ def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 5000) -> st
       .map((frame) => ({
         kind: 'iframe',
         src: clip(frame.src, 220),
+        src_token: sourceToken(frame.src),
         title: clip(frame.title),
         aria: clip(attr(frame, 'aria-label')),
         nearby: clip(textOf(frame.closest('figure, label, div, section, article') || frame.parentElement), 120),

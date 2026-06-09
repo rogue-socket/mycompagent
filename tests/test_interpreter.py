@@ -142,6 +142,32 @@ class InterpreterTests(unittest.TestCase):
 
         self.assertIn("src_token='a1b2c'", state.dom_evidence)
 
+    def test_dom_evidence_can_surface_iframe_source_filename_tokens(self) -> None:
+        snapshot = SnapshotState(
+            url="https://example.com/form",
+            title="Form",
+            elements=[],
+            raw_text="",
+        )
+
+        state = interpret_page(
+            snapshot,
+            DummyExecutor(
+                dom_items=[
+                    {
+                        "kind": "iframe",
+                        "src": "https://static.example/assets/q7r9x.png",
+                        "src_token": "q7r9x",
+                        "nearby": "Enter the short visual value.",
+                    },
+                ]
+            ),
+            max_clickables=10,
+        )
+
+        self.assertIn("iframe", state.dom_evidence)
+        self.assertIn("src_token='q7r9x'", state.dom_evidence)
+
     def test_dom_evidence_prioritizes_iframes_over_generic_images(self) -> None:
         snapshot = SnapshotState(
             url="https://example.com/form",
