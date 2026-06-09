@@ -109,6 +109,31 @@ class InterpreterTests(unittest.TestCase):
         self.assertIn("status_indicator: status='success'", state.dom_evidence)
         self.assertIn("Requirement B is valid.", state.dom_evidence)
 
+    def test_dom_evidence_can_surface_short_source_filename_tokens(self) -> None:
+        snapshot = SnapshotState(
+            url="https://example.com/form",
+            title="Form",
+            elements=[],
+            raw_text="",
+        )
+
+        state = interpret_page(
+            snapshot,
+            DummyExecutor(
+                dom_items=[
+                    {
+                        "kind": "image",
+                        "src": "https://static.example/assets/a1b2c.png",
+                        "src_token": "a1b2c",
+                        "nearby": "Enter the short visual value.",
+                    },
+                ]
+            ),
+            max_clickables=10,
+        )
+
+        self.assertIn("src_token='a1b2c'", state.dom_evidence)
+
     def test_dom_evidence_prioritizes_iframes_over_generic_images(self) -> None:
         snapshot = SnapshotState(
             url="https://example.com/form",

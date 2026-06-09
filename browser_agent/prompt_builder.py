@@ -47,6 +47,7 @@ def build_system_instruction(
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
         "  autocomplete dropdowns often cover it and cause timeout errors.",
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
+        "- For short visual values, inspect image src/alt/title and any src_token in DOM evidence before asking the human.",
         "- For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints. Before editing a value, compare the current requirements/status lines with the current value, make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.",
         "- If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human. Reserve ask_human for operator-only visual/private values that page evidence and browser lookup cannot obtain.",
         "- If page evidence shows a public text-like asset URL such as SVG, XML, JSON, HTML, or plain text, use 'fetch_url' before browser 'goto' so the task tab keeps its state.",

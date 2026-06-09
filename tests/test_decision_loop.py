@@ -529,6 +529,40 @@ class VisualCodePlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class HumanInputUnavailablePlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "ask_human",
+                {
+                    "question": "What short visual code is shown?",
+                    "reason": "The required short visual code is not present in the DOM.",
+                },
+                "Ask the operator for the visual code.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["tool_name"], "ask_human")
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            self.testcase.assertIn("stdin is not available", self.tool_results[-1]["error"])
+            self.testcase.assertIn("Human input was requested", message)
+            return _tool(
+                "finish",
+                {"reason": "Unavailable human input was handled without crashing."},
+                "The loop surfaced the missing input as an error.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 class SnapshotTimeoutRecoveryExecutor:
     def __init__(self) -> None:
         self.commands: list[str] = []
@@ -1515,6 +1549,40 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                 shlex.split(actions[1]["command"]),
                 ["playwright-cli", "fill", "e15", "initialABCD"],
             )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_ask_human_eof_is_reported_without_crashing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = HumanInputUnavailablePlanner(self)
+            executor = VisualCodeExecutor()
+            loop = DecisionLoop(
+                task="Handle visual challenge input.",
+                mode="auto",
+                planner=planner,
+                config={
+                    "max_steps": 3,
+                    "max_errors": 1,
+                    "min_visible_text": 0,
+                    "allow_human_input": True,
+                },
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/visual-challenge.html",
+                open_args=[],
+                debug=False,
+                human_input=lambda prompt: (_ for _ in ()).throw(EOFError()),
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "ask_human")
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["approval_status"], "stdin_unavailable")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_finish_validation_rejects_higher_price_than_evidence(self) -> None:

@@ -69,6 +69,7 @@ Rules:
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
 - Use ask_human when a short missing value visible to the operator is needed to continue.
 - Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.
+- For short visual values, inspect image src/alt/title and any src_token in DOM evidence before asking the human.
 - For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints; make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.
 - If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human; reserve ask_human for operator-only visual/private values.
 - If page evidence shows a public text-like asset URL such as SVG, XML, JSON, HTML, or plain text, use fetch_url before browser goto so the task tab keeps its state.

@@ -463,12 +463,23 @@ def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 5000) -> st
         style.visibility !== 'hidden' && style.display !== 'none';
     };
     const clip = (value, max = 180) => String(value || '').slice(0, max);
+    const sourceToken = (url) => {
+      try {
+        const parsed = new URL(url, window.location.href);
+        const base = (parsed.pathname.split('/').pop() || '')
+          .replace(/\\.[a-z0-9]{1,8}$/i, '');
+        return /^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z0-9_-]{3,24}$/.test(base) ? base : '';
+      } catch {
+        return '';
+      }
+    };
     const images = Array.from(document.images)
       .filter((img) => visible(img) && (img.currentSrc || img.src || img.alt))
       .slice(0, 20)
       .map((img) => ({
         kind: 'image',
         src: clip(img.currentSrc || img.src, 220),
+        src_token: sourceToken(img.currentSrc || img.src),
         alt: clip(img.alt),
         title: clip(img.title),
         aria: clip(attr(img, 'aria-label')),

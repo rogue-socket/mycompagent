@@ -422,7 +422,37 @@ class DecisionLoop:
                         continue
 
                     self._log(f"Step {self.step}: awaiting human input — {question}")
-                    answer = self.human_input(f"\n[BrowserAgent] {question}\n> ").strip()
+                    try:
+                        answer = self.human_input(f"\n[BrowserAgent] {question}\n> ").strip()
+                    except EOFError:
+                        error = (
+                            "Human input was requested, but stdin is not available. "
+                            "Use available page evidence, public lookup, or run in an "
+                            "interactive terminal for operator-visible values."
+                        )
+                        self.last_step_error = error
+                        self._log(f"Step {self.step}: ask_human skipped — {error}")
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "ask_human",
+                                "approval_status": "stdin_unavailable",
+                                "execution_result": "skipped",
+                                "question": question,
+                                "reason": reason,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("ask_human skipped: " + question)
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": error},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     append_jsonl(
                         self.paths.actions_log,
                         {

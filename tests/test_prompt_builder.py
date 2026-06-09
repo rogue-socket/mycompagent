@@ -20,6 +20,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("smallest reversible edit", message)
         self.assertIn("public information", message)
         self.assertIn("Reserve ask_human", message)
+        self.assertIn("src_token", message)
+        self.assertIn("before asking the human", message)
         self.assertIn("A new tab opens blank", message)
         self.assertIn("Stay there until you have loaded and extracted", message)
         self.assertIn("already marked current", message)
