@@ -1226,6 +1226,77 @@ class StaleRefGuardPlanner:
         pass
 
 
+class SameValueFillExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.value = "base"
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self.value)}", "")
+        if command.startswith("playwright-cli run-code "):
+            items = [
+                {
+                    "kind": "active_editable",
+                    "tag": "INPUT",
+                    "role": "textbox",
+                    "text": self.value,
+                }
+            ]
+            return CommandResult(command, 0, f"### Result\n{json.dumps(items)}", "")
+        if command == "playwright-cli fill e15 baseX":
+            self.value = "baseX"
+            return CommandResult(command, 0, "Filled", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [f'textbox "Value" : "{self.value}" [ref=e15]'],
+            ),
+            "",
+        )
+
+
+class SameValueFillPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "base"},
+                "Mistakenly repeat the current value.",
+            )
+        if step == 2:
+            self.testcase.assertIn("No-op fill guard", message)
+            self.testcase.assertIn("already contains the exact value", message)
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "Make a value-changing edit.",
+            )
+        if step == 3:
+            return _tool("finish", {"reason": "Changed value after no-op guard."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 class UngroundedTypeGuardExecutor:
     def __init__(self) -> None:
         self.current_tab = 1
@@ -2717,6 +2788,36 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[0]["reason"], "ref_not_in_current_snapshot")
             self.assertEqual(actions[1]["command"], "playwright-cli tab-select 0")
             self.assertEqual(actions[2]["command"], "playwright-cli fill e15 baseX")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_fill_with_current_value_is_skipped_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = SameValueFillPlanner(self)
+            executor = SameValueFillExecutor()
+            loop = DecisionLoop(
+                task="Make a meaningful edit to the task form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli fill e15 base", executor.commands)
+            self.assertIn("playwright-cli fill e15 baseX", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "fill_value_already_current")
+            self.assertEqual(actions[1]["command"], "playwright-cli fill e15 baseX")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_type_without_current_editable_target_is_skipped(self) -> None:

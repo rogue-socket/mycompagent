@@ -867,6 +867,29 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                same_value_fill = _same_value_fill_warning(
+                    parsed_action,
+                    snapshot_state.elements,
+                    getattr(interpreter_state, "dom_evidence", "") or "",
+                )
+                if same_value_fill:
+                    self.last_step_error = same_value_fill
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "fill_value_already_current",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 current_tab_noop = _current_tab_selection_noop(
                     parsed_action,
                     snapshot_state.raw_text,
@@ -1896,6 +1919,51 @@ def _missing_action_ref_warning(
         "control is on another tab or page, switch back or navigate there first, "
         "then use the fresh refs from that page."
     )
+
+
+def _same_value_fill_warning(
+    parsed_action: Any,
+    elements: list[Any],
+    dom_evidence: str,
+) -> str:
+    if parsed_action.command != "fill" or len(parsed_action.args) < 2:
+        return ""
+    target = _element_by_ref(elements, parsed_action.args[0])
+    if target is None:
+        return ""
+    current_value = _editable_value_from_element(target)
+    if current_value is None and _element_is_active(target):
+        current_value = _active_editable_text_from_dom_evidence(dom_evidence)
+    if current_value is None:
+        return ""
+    intended_value = _normalize_observed_value(str(parsed_action.args[1]))
+    if not intended_value or intended_value != current_value:
+        return ""
+    return (
+        "No-op fill guard: the target editable already contains the exact value "
+        "you are trying to fill. Do not repeat the same fill. Make a specific "
+        "value-changing edit, gather missing evidence, or finish if the current "
+        "value already satisfies the task."
+    )
+
+
+def _element_is_active(element: Any) -> bool:
+    metadata = tuple(str(item).lower() for item in getattr(element, "metadata", ()) or ())
+    if "active" in metadata or "focused" in metadata:
+        return True
+    description = (getattr(element, "description", "") or "").lower()
+    return "[active]" in description or "[focused]" in description
+
+
+def _editable_value_from_element(element: Any) -> str | None:
+    description = (getattr(element, "description", "") or "").strip()
+    if not re.search(r"\b(textbox|input|combobox|textarea)\b", description, re.I):
+        return None
+    match = re.search(r":\s*(['\"])(.*?)\1\s*$", description)
+    if not match:
+        return None
+    value = _normalize_observed_value(match.group(2))
+    return value or None
 
 
 def _action_refs(parsed_action: Any) -> list[str]:
