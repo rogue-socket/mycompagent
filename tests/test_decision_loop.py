@@ -879,6 +879,48 @@ class RejectFetchSchemePlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class FailedUrlRetryPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://offline.example/api/one", "max_chars": "12000"},
+                "Try the public source.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            return _tool(
+                "fetch_url",
+                {"url": "https://offline.example/api/two", "max_chars": "12000"},
+                "Try the same host with another endpoint.",
+            )
+        if step == 3:
+            self.testcase.assertIn("Recent URL failure guard", message)
+            return _tool(
+                "goto",
+                {"url": "https://offline.example/search"},
+                "Try browser navigation to the same failed host.",
+            )
+        if step == 4:
+            self.testcase.assertIn("unreachable host", message)
+            return _tool(
+                "finish",
+                {"reason": "Failed URL retry guard was verified."},
+                "The loop rejected repeated failed-source attempts.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 class SpeculativeVariantExecutor:
     supports_dom_evidence = True
 
@@ -1019,6 +1061,44 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_recent_failed_url_host_retries_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = FailedUrlRetryPlanner(self)
+            executor = FetchUrlExecutor()
+            loop = DecisionLoop(
+                task="Gather public evidence from a working source.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 5, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=lambda url, max_chars: {
+                    "status": "error",
+                    "url": url,
+                    "error": "nodename nor servname provided",
+                },
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli goto https://offline.example/search", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "fetch_url")
+            self.assertEqual(actions[0]["execution_result"], "error")
+            self.assertEqual(actions[1]["command"], "fetch_url")
+            self.assertEqual(actions[1]["execution_result"], "skipped")
+            self.assertEqual(actions[1]["reason"], "recent_failed_url")
+            self.assertEqual(actions[2]["execution_result"], "skipped")
+            self.assertEqual(actions[2]["reason"], "recent_failed_url")
+            self.assertEqual(actions[-1]["command"], "finish")
+
     def test_fetch_html_text_is_normalized_for_planner_evidence(self) -> None:
         raw_html = """
         <html>

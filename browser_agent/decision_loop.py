@@ -43,6 +43,12 @@ class RunResult:
     grounded_route: list[dict[str, str]]
 
 
+@dataclass(slots=True)
+class FailedUrlAttempt:
+    url: str
+    error: str
+
+
 class DecisionLoop:
     """Coordinates snapshot, planning, approvals, and execution."""
 
@@ -91,6 +97,7 @@ class DecisionLoop:
         self.finish_output: str | None = None
         self.task_contract = build_task_contract(task)
         self.evidence_ledger = EvidenceLedger()
+        self.failed_url_attempts: list[FailedUrlAttempt] = []
 
     def run(self) -> RunResult:
         start = time.monotonic()
@@ -480,14 +487,40 @@ class DecisionLoop:
                 # ---- Handle public text fetch tool ----
                 if tool_result.tool_name == "fetch_url":
                     url = tool_result.tool_args.get("url", "").strip()
+                    failed_url_warning = self._failed_url_retry_warning(url)
+                    if failed_url_warning:
+                        self.last_step_error = failed_url_warning
+                        self._log(f"Step {self.step}: fetch_url skipped - {url}")
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "fetch_url",
+                                "approval_status": "n/a",
+                                "execution_result": "skipped",
+                                "reason": "recent_failed_url",
+                                "url": url,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("fetch_url skipped: " + url)
+                        self.last_action_ok = False
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": failed_url_warning},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     max_chars = _fetch_max_chars(tool_result.tool_args.get("max_chars"))
                     fetch_result = self.url_fetcher(url, max_chars)
                     status = str(fetch_result.get("status", "error"))
                     self.last_action_ok = status == "ok"
                     if status != "ok":
-                        self.last_step_error = str(
-                            fetch_result.get("error") or "fetch_url failed"
-                        )
+                        error = str(fetch_result.get("error") or "fetch_url failed")
+                        self.last_step_error = error
+                        self._record_failed_url(url, error)
                     self._log(
                         "Step "
                         f"{self.step}: fetch_url {status} - "
@@ -634,6 +667,24 @@ class DecisionLoop:
                             "execution_result": "skipped",
                             "reason": "stateful_task_tab_lookup_navigation",
                             "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
+                failed_url_navigation = self._failed_url_navigation_warning(parsed_action)
+                if failed_url_navigation:
+                    self.last_step_error = failed_url_navigation
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "recent_failed_url",
                             "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
@@ -800,6 +851,8 @@ class DecisionLoop:
                 elif exec_status != "ok":
                     result_payload["error"] = (exec_result.stderr or "command failed")[:500]
                     self.last_step_error = result_payload["error"]
+                    if parsed_action.command == "goto" and parsed_action.args:
+                        self._record_failed_url(parsed_action.args[0], result_payload["error"])
                     if recovery_status == "ok":
                         if recovery_kind == "overlay_escape":
                             result_payload["recovery"] = "pressed Escape to dismiss blocking overlay"
@@ -1014,6 +1067,28 @@ class DecisionLoop:
         )
         has_navigation = any(action.startswith("playwright-cli goto ") for action in recent)
         return has_tab_action and has_navigation
+
+    def _record_failed_url(self, url: str, error: str) -> None:
+        if not url:
+            return
+        self.failed_url_attempts.append(FailedUrlAttempt(url=url, error=error))
+        self.failed_url_attempts = self.failed_url_attempts[-20:]
+
+    def _failed_url_retry_warning(self, url: str) -> str:
+        failed = _matching_failed_url(url, self.failed_url_attempts)
+        if failed is None:
+            return ""
+        return (
+            "Recent URL failure guard: this URL or host already failed during this run "
+            f"({failed.error}). Do not retry the same failed source or navigate to that "
+            "unreachable host. Use a different source, a search/result page, visible page "
+            "evidence, or a fetchable public text page instead."
+        )
+
+    def _failed_url_navigation_warning(self, parsed_action: Any) -> str:
+        if parsed_action.command != "goto" or not parsed_action.args:
+            return ""
+        return self._failed_url_retry_warning(parsed_action.args[0])
 
     def _speculative_variant_fill_warning(
         self,
@@ -1462,6 +1537,49 @@ def _common_prefix_len(left: str, right: str) -> int:
             break
         count += 1
     return count
+
+
+def _matching_failed_url(
+    url: str,
+    failed_attempts: list[FailedUrlAttempt],
+) -> FailedUrlAttempt | None:
+    parsed = urlparse(url or "")
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    normalized = _normalized_url_for_retry(url)
+    for failed in reversed(failed_attempts):
+        failed_parsed = urlparse(failed.url or "")
+        if failed_parsed.scheme not in {"http", "https"} or not failed_parsed.netloc:
+            continue
+        if _normalized_url_for_retry(failed.url) == normalized:
+            return failed
+        if (
+            parsed.netloc == failed_parsed.netloc
+            and _host_wide_failure(failed.error)
+        ):
+            return failed
+    return None
+
+
+def _normalized_url_for_retry(url: str) -> str:
+    parsed = urlparse(url or "")
+    path = parsed.path.rstrip("/") or "/"
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}?{parsed.query}"
+
+
+def _host_wide_failure(error: str) -> bool:
+    lowered = (error or "").lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "name_not_resolved",
+            "nodename nor servname",
+            "temporary failure in name resolution",
+            "failed to establish a new connection",
+            "connection refused",
+            "network is unreachable",
+        )
+    )
 
 
 def _same_location(current_url: str, expected_url: str) -> bool:
