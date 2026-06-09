@@ -493,6 +493,37 @@ class DecisionLoop:
                     reason = tool_result.tool_args.get("reason", "").strip()
                     if not question:
                         question = "Please provide the missing information needed to continue."
+                    browser_action_warning = _human_browser_action_warning(
+                        question,
+                        reason,
+                    )
+                    if browser_action_warning:
+                        self.last_step_error = browser_action_warning
+                        self._log(
+                            "Step "
+                            f"{self.step}: ask_human skipped — browser action requested"
+                        )
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "ask_human",
+                                "approval_status": "n/a",
+                                "execution_result": "skipped",
+                                "reason": "browser_action_available",
+                                "question": question,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("ask_human skipped: " + question)
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": browser_action_warning},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     source_token_warning = _source_token_human_input_warning(
                         question,
                         reason,
@@ -2122,6 +2153,38 @@ def _fragment_may_affect_failing_status(fragment: str, failing_labels: list[str]
         if any(token in lowered for token in ("length", "character", "char")):
             return True
     return False
+
+
+def _human_browser_action_warning(question: str, reason: str) -> str:
+    text = " ".join(part for part in (question, reason) if part).lower()
+    if not text:
+        return ""
+
+    selection_request = re.search(
+        r"\b(?:please\s+)?(?:select|highlight)\b.*\b(?:text|substring|word|phrase|characters?)\b",
+        text,
+    )
+    if selection_request:
+        return (
+            "Human browser-action guard: ask_human is for missing operator-visible "
+            "values, not for asking the operator to manipulate the page. If an exact "
+            "focused-editable substring must be selected or replaced, call select_text "
+            "with that exact substring, then type the replacement text and verify the "
+            "visible status indicators."
+        )
+
+    action_request = re.search(
+        r"\b(?:please\s+)?(?:click|press|focus|delete|backspace|paste|copy)\b",
+        text,
+    )
+    if action_request:
+        return (
+            "Human browser-action guard: ask_human is for missing operator-visible "
+            "values, not for asking the operator to click, press, focus, delete, copy, "
+            "or paste in the page. Use the browser tools to perform the page action, "
+            "then verify the result from page evidence."
+        )
+    return ""
 
 
 def _rich_text_plain_fill_warning(

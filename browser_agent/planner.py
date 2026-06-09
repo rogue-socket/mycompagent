@@ -68,7 +68,7 @@ Rules:
 - Return JSON only. No Markdown fences, prose, or tool call syntax.
 - Use only element refs from the current page state.
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
-- Use ask_human when a short missing value visible to the operator is needed to continue.
+- Use ask_human when a short missing value visible to the operator is needed to continue. Do not ask the human to select, highlight, click, focus, type, press keys, or perform other browser actions the agent can perform with tools.
 - Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.
 - For short visual values, inspect image src/alt/title and any src_token in DOM evidence before asking the human.
 - If a nearby image has src_token='abc123' and the requirement asks for a short code/text visible in that image, treat that token as page evidence to try before asking the human or fetching binary image variants.
@@ -88,6 +88,7 @@ Rules:
 - After a lookup result is loaded and the needed value is extracted, switch back to the original task tab before using task-page element refs or filling task-page controls.
 - For iframe-only visual clues, inspect iframe src/title/nearby DOM evidence and use public lookup when possible; do not use frame-scoped refs as normal element refs unless they are listed as current clickable elements.
 - Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
+- Use select_text yourself when an exact focused-editable substring must be selected or replaced; then type the replacement text.
 - Use format_selection for rich-text formatting on selected editable text instead of clicking toolbar buttons when possible.
 - Choose one action that advances the browser task."""
 

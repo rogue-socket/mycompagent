@@ -79,6 +79,8 @@ class CodexPlannerTests(unittest.TestCase):
         self.assertIn("hidden future rule", model.prompts[0])
         self.assertIn("do not anticipate hidden requirements", model.prompts[0])
         self.assertIn("currently visible failing requirement", model.prompts[0])
+        self.assertIn("Do not ask the human to select", model.prompts[0])
+        self.assertIn("Use select_text yourself", model.prompts[0])
 
     def test_retries_invalid_json(self) -> None:
         model = _FakeModel(

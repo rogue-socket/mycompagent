@@ -12,6 +12,7 @@ from browser_agent.decision_loop import (
     RunResult,
     fetch_public_text_url,
     _html_to_readable_text,
+    _human_browser_action_warning,
     _json_to_readable_text,
     _looks_html_text,
     _looks_json_text,
@@ -158,6 +159,26 @@ class RepeatedDeletionGuardTests(unittest.TestCase):
         self.assertIn("Repeated deletion guard", warning)
         self.assertIn("select_text", warning)
         self.assertIn("exact substring", warning)
+
+
+class HumanBrowserActionGuardTests(unittest.TestCase):
+    def test_selection_request_points_to_select_text(self) -> None:
+        warning = _human_browser_action_warning(
+            "Please select only the text 'May' in the field.",
+            "The exact substring must be replaced.",
+        )
+
+        self.assertIn("Human browser-action guard", warning)
+        self.assertIn("select_text", warning)
+        self.assertIn("type the replacement", warning)
+
+    def test_value_question_is_allowed(self) -> None:
+        warning = _human_browser_action_warning(
+            "What short visual code is shown?",
+            "The value is visible only to the operator.",
+        )
+
+        self.assertEqual(warning, "")
 
 
 class AriaComboboxExecutor:
@@ -865,6 +886,39 @@ class VisualCodePlanner:
         if step == 3:
             self.testcase.assertIn("Visual challenge passed", message)
             return _tool("finish", {"reason": "Visual challenge passed."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class HumanBrowserActionPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, str]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "ask_human",
+                {
+                    "question": "Please select only the text 'old' in the field.",
+                    "reason": "The exact substring must be replaced.",
+                },
+                "Ask the human to manipulate the page.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["tool_name"], "ask_human")
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            self.testcase.assertIn("select_text", self.tool_results[-1]["error"])
+            return _tool(
+                "finish",
+                {"reason": "Browser action request was rejected."},
+                "Guard worked.",
+            )
         raise AssertionError(f"Unexpected planner step {step}")
 
     def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
@@ -3698,6 +3752,42 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                 shlex.split(actions[1]["command"]),
                 ["playwright-cli", "fill", "e15", "initialABCD"],
             )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_ask_human_for_browser_action_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = HumanBrowserActionPlanner(self)
+            executor = VisualCodeExecutor()
+            loop = DecisionLoop(
+                task="Replace text in a focused field.",
+                mode="auto",
+                planner=planner,
+                config={
+                    "max_steps": 3,
+                    "max_errors": 1,
+                    "min_visible_text": 0,
+                    "allow_human_input": True,
+                },
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/visual-challenge.html",
+                open_args=[],
+                debug=False,
+                human_input=lambda _prompt: (_ for _ in ()).throw(
+                    AssertionError("human input should not be called")
+                ),
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "ask_human")
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "browser_action_available")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_ask_human_prompt_includes_visual_page_evidence(self) -> None:

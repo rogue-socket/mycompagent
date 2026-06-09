@@ -56,8 +56,12 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("iframe-only visual clues", message)
         self.assertIn("Do not use frame-scoped refs", message)
         self.assertIn("Use 'select_text' to select an exact substring", message)
+        self.assertIn("Do this yourself", message)
+        self.assertIn("do not ask the human to select", message)
         self.assertIn("before replacing or formatting only that substring", message)
         self.assertIn("Use 'format_selection'", message)
+        self.assertIn("Use 'ask_human' only when a short missing value", message)
+        self.assertIn("Do not use ask_human to request browser actions", message)
 
     def test_memory_lessons_are_not_task_evidence(self) -> None:
         class Lesson:
