@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib import error as urlerror
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from browser_agent.action_parser import ActionParseError, parse_tool_call
 from browser_agent.approval_system import ask_approval, requires_approval
@@ -57,6 +59,7 @@ class DecisionLoop:
         debug: bool,
         memory: MemoryStore | None = None,
         human_input: Callable[[str], str] | None = None,
+        url_fetcher: Callable[[str, int], dict[str, Any]] | None = None,
     ) -> None:
         self.task = task
         self.mode = mode
@@ -69,6 +72,7 @@ class DecisionLoop:
         self.debug = debug
         self.memory = memory
         self.human_input = human_input or input
+        self.url_fetcher = url_fetcher or fetch_public_text_url
         self.step = 0
         self.errors = 0
         self.stop_reason = "unknown"
@@ -438,6 +442,44 @@ class DecisionLoop:
                             tool_result.tool_name,
                             {"status": "ok", "answer": answer},
                         )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+
+                # ---- Handle public text fetch tool ----
+                if tool_result.tool_name == "fetch_url":
+                    url = tool_result.tool_args.get("url", "").strip()
+                    max_chars = _fetch_max_chars(tool_result.tool_args.get("max_chars"))
+                    fetch_result = self.url_fetcher(url, max_chars)
+                    status = str(fetch_result.get("status", "error"))
+                    self.last_action_ok = status == "ok"
+                    if status != "ok":
+                        self.last_step_error = str(
+                            fetch_result.get("error") or "fetch_url failed"
+                        )
+                    self._log(
+                        "Step "
+                        f"{self.step}: fetch_url {status} - "
+                        f"{url or '<missing url>'}"
+                    )
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": "fetch_url",
+                            "approval_status": "n/a",
+                            "execution_result": status,
+                            "url": url,
+                            "content_type": fetch_result.get("content_type", ""),
+                            "chars": fetch_result.get("chars", 0),
+                            "truncated": fetch_result.get("truncated", False),
+                            "error": fetch_result.get("error", ""),
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append("fetch_url " + status + ": " + url)
+                    try:
+                        self.planner.send_tool_result(tool_result.tool_name, fetch_result)
                     except Exception:  # noqa: BLE001
                         pass
                     continue
@@ -1285,6 +1327,89 @@ def _navigates_away_from_location(current_url: str, target_url: str) -> bool:
 def _normalized_path(path: str) -> str:
     cleaned = path or "/"
     return cleaned.rstrip("/") or "/"
+
+
+def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
+    """Fetch bounded text from an HTTP(S) URL for planner evidence."""
+    url = (url or "").strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return {
+            "status": "error",
+            "url": url,
+            "error": "fetch_url only supports absolute HTTP/HTTPS URLs.",
+        }
+    if parsed.username or parsed.password:
+        return {
+            "status": "error",
+            "url": url,
+            "error": "fetch_url does not support URLs with embedded credentials.",
+        }
+
+    limit = _fetch_max_chars(max_chars)
+    byte_limit = min(max(limit * 4, 4096), 200_000)
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "browser-agent/1.0",
+            "Accept": "text/*, application/json, application/xml, image/svg+xml, */*;q=0.5",
+        },
+    )
+    try:
+        with urlopen(request, timeout=12) as response:  # noqa: S310 - user-directed URL fetch
+            raw = response.read(byte_limit + 1)
+            content_type = response.headers.get("content-type", "")
+            charset = response.headers.get_content_charset() or "utf-8"
+            final_url = response.geturl()
+            status_code = getattr(response, "status", 0)
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        return {"status": "error", "url": url, "error": str(exc)}
+
+    raw_truncated = len(raw) > byte_limit
+    raw = raw[:byte_limit]
+    if _looks_binary(raw, content_type):
+        return {
+            "status": "error",
+            "url": url,
+            "final_url": final_url,
+            "content_type": content_type,
+            "status_code": status_code,
+            "error": "Fetched response does not look like text.",
+        }
+
+    text = raw.decode(charset, errors="replace")
+    text_truncated = len(text) > limit
+    text = text[:limit]
+    return {
+        "status": "ok",
+        "url": url,
+        "final_url": final_url,
+        "content_type": content_type,
+        "status_code": status_code,
+        "text": text,
+        "chars": len(text),
+        "truncated": raw_truncated or text_truncated,
+    }
+
+
+def _fetch_max_chars(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = 12000
+    return min(max(parsed, 1000), 20000)
+
+
+def _looks_binary(raw: bytes, content_type: str) -> bool:
+    lowered = (content_type or "").lower()
+    if any(token in lowered for token in ("text/", "json", "xml", "svg", "javascript")):
+        return False
+    if b"\x00" in raw[:1024]:
+        return True
+    if not raw:
+        return False
+    control = sum(1 for byte in raw[:1024] if byte < 9 or 13 < byte < 32)
+    return control / min(len(raw), 1024) > 0.1
 
 
 def _hash_text(text: str) -> str:

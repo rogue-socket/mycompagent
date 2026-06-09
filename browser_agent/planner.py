@@ -52,7 +52,7 @@ Allowed tool names and arguments:
 - format_selection: {"format": "bold"} after focusing an editable area and selecting text
 - scroll: {"dy": "900"} to scroll down, {"dy": "-900"} to scroll up
 - drag: {"source_ref": "e1", "target_ref": "e2"}
-- draw_circle: {"radius": "170", "steps": "24"} for freehand circle drawing games
+- draw_circle: {"radius": "optional", "steps": "optional"} for freehand circle drawing games
 - upload: {"ref": "e1", "file_path": "/path/to/file"}
 - goto: {"url": "https://example.com"}
 - go_back/go_forward/reload/snapshot/screenshot/tab_list/close: {}
@@ -60,16 +60,18 @@ Allowed tool names and arguments:
 - tab_close/tab_select: {"index": "0"}
 - state_save/state_load: {"path": "auth.json"}
 - ask_human: {"question": "short specific question", "reason": "why this is needed"}
+- fetch_url: {"url": "https://example.com/data.svg", "max_chars": "12000"} for public text-like assets
 - finish: {"reason": "what was completed"}
 
 Rules:
 - Return JSON only. No Markdown fences, prose, or tool call syntax.
 - Use only element refs from the current page state.
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
-- Use ask_human when a short missing value visible to the operator is needed to continue, such as CAPTCHA text.
+- Use ask_human when a short missing value visible to the operator is needed to continue.
 - Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.
 - For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints; make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.
 - If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human; reserve ask_human for operator-only visual/private values.
+- If page evidence shows a public text-like asset URL such as SVG, XML, JSON, HTML, or plain text, use fetch_url before browser goto so the task tab keeps its state.
 - A new tab opens blank. If you need a lookup URL, call tab_new, then call goto in that current blank tab. Stay there until you have loaded and extracted the lookup result.
 - Do not call tab_select for the tab that is already marked current; it is a no-op. If you are on the intended lookup tab, load the lookup URL with goto or choose another state-changing action.
 - When the original task page has active form/editable state, do not use goto on that tab for more lookup, including same-site asset or detail URLs. Switch to an existing lookup tab or open a new blank tab, then return to the task tab only to edit visible task controls.

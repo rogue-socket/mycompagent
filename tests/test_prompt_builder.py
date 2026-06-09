@@ -27,6 +27,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("active form/editable state", message)
         self.assertIn("do not use goto on that tab", message)
         self.assertIn("same-site asset or detail URLs", message)
+        self.assertIn("fetch_url", message)
+        self.assertIn("text-like asset URL", message)
         self.assertIn("switch back to the original task tab", message)
         self.assertIn("iframe-only visual clues", message)
         self.assertIn("Do not use frame-scoped refs", message)

@@ -446,7 +446,7 @@ class DragFallbackPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
-class CaptchaExecutor:
+class VisualCodeExecutor:
     def __init__(self) -> None:
         self.value = "initial"
         self.commands: list[str] = []
@@ -494,7 +494,7 @@ class CaptchaExecutor:
         return "Visual challenge\nEnter the code shown in the image"
 
 
-class CaptchaPlanner:
+class VisualCodePlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
         self.messages: list[str] = []
@@ -507,7 +507,7 @@ class CaptchaPlanner:
             return _tool(
                 "ask_human",
                 {
-                    "question": "What CAPTCHA text is shown?",
+                    "question": "What short visual code is shown?",
                     "reason": "The required short visual code is not present in the DOM.",
                 },
                 "Ask the operator for the visual code.",
@@ -753,6 +753,93 @@ class CurrentTabNoopPlanner:
         pass
 
 
+class FetchUrlExecutor:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps('Asset task')}", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [
+                    'textbox "Answer" : "in-progress" [ref=e15]',
+                    'iframe title="visual clue" src="https://assets.example/data.svg"',
+                ],
+            ),
+            "",
+        )
+
+
+class FetchUrlPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            self.testcase.assertIn("https://assets.example/data.svg", message)
+            return _tool(
+                "fetch_url",
+                {"url": "https://assets.example/data.svg", "max_chars": "4000"},
+                "Read the visible text asset without navigating away.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
+            self.testcase.assertIn("A B C", self.tool_results[-1]["text"])
+            return _tool(
+                "finish",
+                {"reason": "Fetched the visible asset evidence."},
+                "The fetch returned enough evidence.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class RejectFetchSchemePlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "file:///tmp/secret.txt"},
+                "Try an unsupported local URL.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            self.testcase.assertIn("HTTP/HTTPS", self.tool_results[-1]["error"])
+            return _tool(
+                "finish",
+                {"reason": "Unsupported fetch scheme was rejected."},
+                "The fetch guard rejected the unsupported scheme.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -765,6 +852,72 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_fetch_url_returns_text_without_browser_navigation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = FetchUrlPlanner(self)
+            executor = FetchUrlExecutor()
+            loop = DecisionLoop(
+                task="Inspect a visible public text asset.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 3, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=lambda url, max_chars: {
+                    "status": "ok",
+                    "url": url,
+                    "content_type": "image/svg+xml",
+                    "text": "<svg><desc><pre>A B C</pre></desc></svg>"[:max_chars],
+                    "chars": 43,
+                    "truncated": False,
+                },
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli goto https://assets.example/data.svg", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "fetch_url")
+            self.assertEqual(actions[0]["execution_result"], "ok")
+            self.assertEqual(actions[0]["content_type"], "image/svg+xml")
+            self.assertNotIn("A B C", json.dumps(actions[0]))
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_fetch_url_rejects_non_http_scheme(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = RejectFetchSchemePlanner(self)
+            executor = FetchUrlExecutor()
+            loop = DecisionLoop(
+                task="Inspect a visible public text asset.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 3, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "fetch_url")
+            self.assertEqual(actions[0]["execution_result"], "error")
+            self.assertIn("HTTP/HTTPS", actions[0]["error"])
+            self.assertEqual(actions[-1]["command"], "finish")
+
     def test_selecting_current_tab_is_skipped_with_recovery_hint(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1115,8 +1268,8 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             root = Path(tmp)
             paths = RunPaths(root / "run")
             paths.snapshots.mkdir(parents=True)
-            planner = CaptchaPlanner(self)
-            executor = CaptchaExecutor()
+            planner = VisualCodePlanner(self)
+            executor = VisualCodeExecutor()
             loop = DecisionLoop(
                 task="Pass the visual challenge.",
                 mode="auto",

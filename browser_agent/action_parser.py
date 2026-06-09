@@ -28,7 +28,7 @@ class ParsedAction:
 
 def parse_tool_call(tool_name: str, tool_args: dict[str, str]) -> ParsedAction:
     """Convert a structured tool call into a validated ParsedAction."""
-    if tool_name in {"finish", "ask_human"}:
+    if tool_name in {"finish", "ask_human", "fetch_url"}:
         return ParsedAction(
             action="",
             command=tool_name,

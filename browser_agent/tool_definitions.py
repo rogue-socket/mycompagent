@@ -169,11 +169,14 @@ _TOOLS: list[types.FunctionDeclaration] = [
             properties={
                 "radius": types.Schema(
                     type="STRING",
-                    description="Optional pixel radius, default 170, clamped to a safe range.",
+                    description=(
+                        "Optional pixel radius. Omit it when the page evidence does "
+                        "not expose a reliable size; the tool estimates from the surface."
+                    ),
                 ),
                 "steps": types.Schema(
                     type="STRING",
-                    description="Optional number of path segments, default 24.",
+                    description="Optional number of path segments for the mouse path.",
                 ),
             },
         ),
@@ -232,7 +235,7 @@ _TOOLS: list[types.FunctionDeclaration] = [
         name="ask_human",
         description=(
             "Ask the human operator for missing information that is visible to "
-            "them but unavailable in the page state, such as a CAPTCHA. Use this "
+            "them but unavailable in the page state. Use this "
             "instead of finishing when the task can continue with a short answer."
         ),
         parameters=types.Schema(
@@ -248,6 +251,28 @@ _TOOLS: list[types.FunctionDeclaration] = [
                 ),
             },
             required=["question"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="fetch_url",
+        description=(
+            "Fetch bounded text from a public HTTP/HTTPS URL without navigating "
+            "the browser. Use for text-like assets such as SVG, XML, JSON, HTML, "
+            "or plain text when the URL is visible in page evidence."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "url": types.Schema(
+                    type="STRING",
+                    description="Public HTTP/HTTPS URL to fetch as text.",
+                ),
+                "max_chars": types.Schema(
+                    type="STRING",
+                    description="Optional maximum response characters to return.",
+                ),
+            },
+            required=["url"],
         ),
     ),
     # -- Tabs --
@@ -356,7 +381,7 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
 
     Returns ``None`` for non-CLI tools.
     """
-    if name in {"finish", "ask_human"}:
+    if name in {"finish", "ask_human", "fetch_url"}:
         return None
     if name == "draw_circle":
         return _draw_circle_command(args)
@@ -401,8 +426,8 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
 
 
 def _draw_circle_command(args: dict[str, str]) -> str:
-    radius = _int_arg(args.get("radius"), default=170, minimum=40, maximum=320)
-    steps = _int_arg(args.get("steps"), default=24, minimum=16, maximum=72)
+    radius = _int_arg(args.get("radius"), default=0, minimum=0, maximum=320)
+    steps = _int_arg(args.get("steps"), default=32, minimum=16, maximum=72)
     code = f"""async page => {{
   const requestedRadius = {radius};
   const steps = {steps};
@@ -439,7 +464,9 @@ def _draw_circle_command(args: dict[str, str]) -> str:
       40,
       Math.min(center.cx - 8, vw - center.cx - 8, center.cy - 8, vh - center.cy - 8)
     );
-    const radius = Math.max(40, Math.min(requestedRadius, edgeLimit));
+    const radius = requestedRadius > 0
+      ? Math.max(40, Math.min(requestedRadius, edgeLimit))
+      : edgeLimit;
     return {{ cx: center.cx, cy: center.cy, radius }};
   }}, requestedRadius);
   await page.mouse.move(target.cx + target.radius, target.cy);
