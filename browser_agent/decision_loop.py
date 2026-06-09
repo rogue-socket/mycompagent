@@ -574,9 +574,16 @@ class DecisionLoop:
                             pass
                         continue
 
-                    self._log(f"Step {self.step}: awaiting human input — {question}")
+                    operator_question = _human_question_with_visual_context(
+                        question,
+                        reason,
+                        getattr(interpreter_state, "dom_evidence", "") or "",
+                    )
+                    self._log(f"Step {self.step}: awaiting human input — {operator_question}")
                     try:
-                        answer = self.human_input(f"\n[BrowserAgent] {question}\n> ").strip()
+                        answer = self.human_input(
+                            f"\n[BrowserAgent] {operator_question}\n> "
+                        ).strip()
                     except EOFError:
                         error = (
                             "Human input was requested, but stdin is not available. "
@@ -2251,6 +2258,38 @@ def _source_token_human_input_warning(
         "verify the visible requirement/status. Ask the human only if that evidence "
         "is rejected or ambiguous."
     )
+
+
+def _human_question_with_visual_context(
+    question: str,
+    reason: str,
+    dom_evidence: str,
+) -> str:
+    if not _looks_like_short_visual_value_request(question, reason):
+        return question
+    snippets = _visual_evidence_snippets(dom_evidence)
+    if not snippets:
+        return question
+    evidence = "\n".join(f"- {snippet}" for snippet in snippets[:3])
+    return f"{question}\n\nRelevant page evidence:\n{evidence}"
+
+
+def _visual_evidence_snippets(dom_evidence: str) -> list[str]:
+    snippets: list[str] = []
+    for line in (dom_evidence or "").splitlines():
+        if "- image:" not in line and "- iframe:" not in line:
+            continue
+        kind = "iframe" if "- iframe:" in line else "image"
+        parts = [kind]
+        for field in ("src", "src_token", "alt", "title", "aria", "nearby"):
+            value = _normalize_observed_value(_quoted_dom_field(line, field))
+            if value:
+                parts.append(f"{field}={value!r}")
+        if len(parts) > 1:
+            snippet = " ".join(parts)
+            if snippet not in snippets:
+                snippets.append(snippet[:400])
+    return snippets
 
 
 def _source_token_fetch_warning(url: str, dom_evidence: str) -> str:

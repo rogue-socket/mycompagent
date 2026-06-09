@@ -684,6 +684,24 @@ class SourceFilenameTokenVisualExecutor(SourceTokenVisualExecutor):
         return CommandResult(command, 1, "", f"Unexpected command: {command}")
 
 
+class VisualContextExecutor(VisualCodeExecutor):
+    supports_dom_evidence = True
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        if command.startswith("playwright-cli run-code "):
+            self.commands.append(command)
+            items = [
+                {
+                    "kind": "image",
+                    "src": "https://assets.example/visual/visual-challenge-image.png",
+                    "alt": "short visual challenge",
+                    "nearby": "Enter the code shown in the image",
+                }
+            ]
+            return CommandResult(command, 0, f"### Result\n{json.dumps(items)}", "")
+        return super().run(command, timeout)
+
+
 class VisualCodePlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
@@ -3266,6 +3284,44 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                 ["playwright-cli", "fill", "e15", "initialABCD"],
             )
             self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_ask_human_prompt_includes_visual_page_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = VisualCodePlanner(self)
+            executor = VisualContextExecutor()
+            prompts: list[str] = []
+            loop = DecisionLoop(
+                task="Pass the visual challenge.",
+                mode="auto",
+                planner=planner,
+                config={
+                    "max_steps": 4,
+                    "max_errors": 1,
+                    "min_visible_text": 0,
+                    "allow_human_input": True,
+                },
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/visual-challenge.html",
+                open_args=[],
+                debug=False,
+                human_input=lambda prompt: prompts.append(prompt) or "ABCD",
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(len(prompts), 1)
+            self.assertIn("Relevant page evidence", prompts[0])
+            self.assertIn("visual-challenge-image.png", prompts[0])
+            self.assertIn("short visual challenge", prompts[0])
+            self.assertIn("Enter the code shown in the image", prompts[0])
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "ask_human")
+            self.assertNotIn("ABCD", json.dumps(actions[0]))
 
     def test_ask_human_skipped_when_source_token_evidence_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
