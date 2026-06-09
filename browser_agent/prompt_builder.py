@@ -233,24 +233,28 @@ def build_page_message(
     )
     bad_url_guess_note = _bad_url_guess_note(state, action_history, selected_elements)
     status_summary = _current_status_summary(state.dom_evidence)
+    editable_summary = _current_editable_summary(state.dom_evidence)
+    compact_sections: list[str] = []
+    if status_summary:
+        compact_sections.append("Current status indicators:\n" + status_summary)
+    if editable_summary:
+        compact_sections.append("Current editable values:\n" + editable_summary)
 
     sections = [
         f"Current page:\nURL: {state.url}\nTitle: {state.title}\nType: {state.page_type}",
         f"Page summary:\n{state.page_summary}",
+        *compact_sections,
         clickable_section,
         "Visible text (truncated):\n" + (state.visible_text[:800] if state.visible_text else "(none)"),
         "Previous actions:\n" + ("\n".join(history_lines) if history_lines else "(none)"),
     ]
 
-    if status_summary:
-        sections.insert(2, "Current status indicators:\n" + status_summary)
-
     if state.dom_evidence:
-        sections.insert(3, "DOM evidence:\n" + state.dom_evidence)
+        sections.insert(3 + len(compact_sections), "DOM evidence:\n" + state.dom_evidence)
 
     if evidence_snippets:
         evidence_lines = [f"- {snippet}" for snippet in evidence_snippets]
-        sections.insert(3, "Task-focused evidence:\n" + "\n".join(evidence_lines))
+        sections.insert(3 + len(compact_sections), "Task-focused evidence:\n" + "\n".join(evidence_lines))
 
     if task_context:
         sections.insert(2, "Task contract and evidence so far:\n" + task_context)
@@ -373,6 +377,23 @@ def _current_status_summary(dom_evidence: str) -> str:
             "Satisfied:\n" + "\n".join(f"- {label}" for label in satisfied[:8])
         )
     return "\n".join(sections)
+
+
+def _current_editable_summary(dom_evidence: str) -> str:
+    values: list[str] = []
+    seen: set[str] = set()
+    for line in (dom_evidence or "").splitlines():
+        if "active_editable:" not in line:
+            continue
+        text = _normalize_status_label(_quoted_dom_field(line, "text"))
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        role = _normalize_status_label(_quoted_dom_field(line, "role"))
+        tag = _normalize_status_label(_quoted_dom_field(line, "tag"))
+        label = role or tag or "editable"
+        values.append(f"- {label}: {text!r}")
+    return "\n".join(values[:3])
 
 
 def _status_indicators_from_dom_evidence(dom_evidence: str) -> list[tuple[str, str]]:

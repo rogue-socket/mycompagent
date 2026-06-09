@@ -142,6 +142,29 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Satisfied:\n- Requirement A is valid.", message)
         self.assertLess(message.index("Failing:"), message.index("Satisfied:"))
 
+    def test_active_editable_summary_is_included_before_dom_evidence(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/form",
+            title="Form",
+            page_type="form",
+            clickable_elements=[],
+            visible_text="Value appears twice\nValue appears twice",
+            page_summary="Requirement form.",
+            dom_evidence=(
+                "- active_editable: tag='DIV' role='textbox' "
+                "text='Value appears twice' html='<p>Value appears twice</p>'"
+            ),
+        )
+
+        message = build_page_message(state, action_history=[])
+
+        self.assertIn("Current editable values:", message)
+        self.assertIn("- textbox: 'Value appears twice'", message)
+        self.assertLess(
+            message.index("Current editable values:"),
+            message.index("DOM evidence:"),
+        )
+
     def test_last_observation_is_included_without_failure_language(self) -> None:
         state = InterpreterState(
             url="https://example.com/form",
