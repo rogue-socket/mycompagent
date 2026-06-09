@@ -71,6 +71,10 @@ class CodexPlannerTests(unittest.TestCase):
         self.assertIn("Do not choose snapshot unless the user explicitly asked", model.prompts[0])
         self.assertIn("extract_page_text", model.prompts[0])
         self.assertIn("instead of repeatedly scrolling", model.prompts[0])
+        self.assertIn("query_miss", model.prompts[0])
+        self.assertIn("source_links", model.prompts[0])
+        self.assertIn("source_blocks", model.prompts[0])
+        self.assertIn("before guessing", model.prompts[0])
 
     def test_retries_invalid_json(self) -> None:
         model = _FakeModel(

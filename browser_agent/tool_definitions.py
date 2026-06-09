@@ -649,39 +649,114 @@ def _extract_page_text_command(args: dict[str, str]) -> str:
   }}) => {{
     const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
     const fullText = normalize(document.body ? document.body.innerText : '');
+    const absoluteUrl = (value) => {{
+      try {{
+        return new URL(String(value || ''), document.location.href).href;
+      }} catch {{
+        return '';
+      }}
+    }};
+    const sourceLinkPattern = /(?:^|\\b)(raw|source|download|code|plain|text)(?:\\b|$)|\\.(?:txt|json|xml|svg|html?|md|csv|tsv|js|css)(?:$|[?#])/i;
+    const sourceLinks = Array.from(document.querySelectorAll('a[href]'))
+      .map((link) => {{
+        const text = normalize(link.innerText || link.textContent || link.getAttribute('aria-label') || link.getAttribute('title') || '');
+        const href = absoluteUrl(link.getAttribute('href'));
+        const label = normalize(`${{text}} ${{href}}`);
+        return {{ text, href, source_like: sourceLinkPattern.test(label) }};
+      }})
+      .filter((link) => link.href && (link.source_like || link.text))
+      .slice(0, 30);
+    const sourceSelectors = [
+      'pre',
+      'code',
+      'textarea',
+      'table',
+      '[role="code"]',
+      '[class*="source" i]',
+      '[class*="code" i]',
+      '[class*="blob" i]',
+    ].join(',');
+    const sourceBlocks = [];
+    const seenBlocks = new Set();
+    for (const element of Array.from(document.querySelectorAll(sourceSelectors))) {{
+      const text = normalize(element.value || element.textContent || element.innerText || '');
+      if (text.length < 20) continue;
+      const key = text.slice(0, 1000);
+      if (seenBlocks.has(key)) continue;
+      seenBlocks.add(key);
+      const label = normalize(
+        element.getAttribute('aria-label') ||
+        element.getAttribute('data-path') ||
+        element.getAttribute('id') ||
+        element.getAttribute('class') ||
+        element.tagName
+      ).slice(0, 120);
+      sourceBlocks.push({{ label, chars: text.length, text }});
+    }}
+    sourceBlocks.sort((a, b) => b.chars - a.chars);
+    const searchable = [
+      {{ area: 'visible_text', label: 'document.body.innerText', text: fullText }},
+      ...sourceBlocks.slice(0, 8).map((block, index) => ({{
+        area: 'source_block',
+        label: block.label || `source_block_${{index + 1}}`,
+        text: block.text,
+      }})),
+    ];
+    const sourceSummary = sourceBlocks.slice(0, 8).map((block, index) => ({{
+      index: index + 1,
+      label: block.label,
+      chars: block.chars,
+      preview: block.text.slice(0, 300),
+    }}));
     if (!query) {{
+      const joined = searchable
+        .map((part) => `[${{part.area}}: ${{part.label}}]\\n${{part.text}}`)
+        .join('\\n---\\n');
       return {{
         mode: 'page_text',
-        chars: Math.min(fullText.length, maxChars),
-        truncated: fullText.length > maxChars,
-        text: fullText.slice(0, maxChars),
+        chars: Math.min(joined.length, maxChars),
+        truncated: joined.length > maxChars,
+        text: joined.slice(0, maxChars),
+        source_links: sourceLinks,
+        source_blocks: sourceSummary,
       }};
     }}
-    const lowered = fullText.toLowerCase();
     const needle = query.toLowerCase();
     const snippets = [];
-    let from = 0;
-    while (snippets.length < 12) {{
-      const index = lowered.indexOf(needle, from);
-      if (index < 0) break;
-      const start = Math.max(0, index - 500);
-      const end = Math.min(fullText.length, index + query.length + 500);
-      snippets.push({{
-        index,
-        text: fullText.slice(start, end),
-      }});
-      from = index + Math.max(1, query.length);
+    for (const part of searchable) {{
+      const lowered = part.text.toLowerCase();
+      let from = 0;
+      while (snippets.length < 12) {{
+        const index = lowered.indexOf(needle, from);
+        if (index < 0) break;
+        const start = Math.max(0, index - 500);
+        const end = Math.min(part.text.length, index + query.length + 500);
+        snippets.push({{
+          area: part.area,
+          label: part.label,
+          index,
+          text: part.text.slice(start, end),
+        }});
+        from = index + Math.max(1, query.length);
+      }}
+      if (snippets.length >= 12) break;
     }}
-    const joined = snippets
-      .map((snippet, index) => `[${{index + 1}} @ ${{snippet.index}}] ${{snippet.text}}`)
-      .join('\\n---\\n');
+    const joined = snippets.length
+      ? snippets
+          .map((snippet, index) => `[${{index + 1}} ${{snippet.area}}:${{snippet.label}} @ ${{snippet.index}}] ${{snippet.text}}`)
+          .join('\\n---\\n')
+      : searchable
+          .map((part) => `[miss preview ${{part.area}}: ${{part.label}}]\\n${{part.text.slice(0, 1200)}}`)
+          .join('\\n---\\n');
     return {{
-      mode: 'query_snippets',
+      mode: snippets.length ? 'query_snippets' : 'query_miss',
       query,
       matches: snippets.length,
       chars: Math.min(joined.length, maxChars),
       truncated: joined.length > maxChars,
       text: joined.slice(0, maxChars),
+      source_links: sourceLinks,
+      source_blocks: sourceSummary,
     }};
   }}, {{ query, maxChars }});
   return result;

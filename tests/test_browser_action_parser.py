@@ -110,6 +110,11 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertIn("maxChars = 9000", action.action)
         self.assertIn("document.body", action.action)
         self.assertIn("query_snippets", action.action)
+        self.assertIn("query_miss", action.action)
+        self.assertIn("source_links", action.action)
+        self.assertIn("source_blocks", action.action)
+        self.assertIn("textContent", action.action)
+        self.assertIn("raw|source|download|code", action.action)
 
     def test_drag_rejects_bad_ref(self) -> None:
         with self.assertRaises(ActionParseError):

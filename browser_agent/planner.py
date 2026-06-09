@@ -77,7 +77,8 @@ Rules:
 - Before adding or replacing a token in a multi-constraint value, check whether the token's letters, digits, symbols, case, length, or other visible properties could affect already-satisfied constraints. Prefer a candidate that satisfies the new requirement while staying neutral for existing numeric, symbolic, text, and length requirements.
 - If a needed value is public information, use browser navigation, search, or a new tab to find it before asking the human; reserve ask_human for operator-only visual/private values.
 - If page evidence shows a public text-like asset URL such as SVG, XML, JSON, HTML, or plain text, use fetch_url before browser goto so the task tab keeps its state. If a fetch result is truncated, increase max_chars or choose a narrower source before fetching the same URL again.
-- On a loaded long article, documentation page, table, or search result where the needed text is below the viewport, use extract_page_text with a query instead of repeatedly scrolling.
+- On a loaded long article, documentation page, table, source/code page, or search result where the needed text is below the viewport, use extract_page_text with a query instead of repeatedly scrolling.
+- If extract_page_text returns query_miss with source_links or source_blocks, follow the most relevant raw/source/text link or extract a broader page/source preview before guessing.
 - A new tab opens blank. If you need a lookup URL, call tab_new, then call goto in that current blank tab. Stay there until you have loaded and extracted the lookup result.
 - If an about:blank tab already exists, select and reuse it for lookup work instead of opening another blank tab.
 - Do not call tab_select for the tab that is already marked current; it is a no-op. If you are on the intended lookup tab, load the lookup URL with goto or choose another state-changing action.
