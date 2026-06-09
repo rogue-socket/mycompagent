@@ -2306,6 +2306,8 @@ class DecisionLoopMetadataTests(unittest.TestCase):
           <title>Example Position</title>
           <desc>Choose the best move from this diagram.</desc>
           <path d="M 10 10 L 200 200 Z"></path>
+          <use href="#piece-knight" x="120" y="240" transform="translate(120 240)" />
+          <image href="tile.png" x="10" y="20" width="40" height="40" />
           <text>Candidate: move token</text>
         </svg>
         """
@@ -2317,6 +2319,11 @@ class DecisionLoopMetadataTests(unittest.TestCase):
         self.assertIn("Choose the best move from this diagram.", text)
         self.assertIn("Candidate: move token", text)
         self.assertIn("aria-label: Example board", text)
+        self.assertIn("use: href='#piece-knight'", text)
+        self.assertIn("x='120'", text)
+        self.assertIn("transform='translate(120 240)'", text)
+        self.assertIn("image: href='tile.png'", text)
+        self.assertIn("width='40'", text)
         self.assertNotIn("M 10 10", text)
         self.assertNotIn("<path", text)
 

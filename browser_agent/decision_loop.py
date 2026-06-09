@@ -2593,11 +2593,19 @@ def _html_to_readable_text(text: str) -> str:
 
 
 def _svg_to_readable_text(text: str) -> str:
-    return _markup_to_readable_text(
+    readable = _markup_to_readable_text(
         text,
         preferred_tags=("title", "desc", "text", "tspan"),
         include_attrs=("aria-label", "alt", "title", "id", "href", "xlink:href"),
     )
+    lines = [line for line in readable.splitlines() if line.strip()]
+    seen = set(lines)
+    for summary in _svg_element_summaries(text):
+        if summary in seen:
+            continue
+        seen.add(summary)
+        lines.append(summary)
+    return "\n".join(lines[:80])
 
 
 def _xml_to_readable_text(text: str) -> str:
@@ -2642,6 +2650,69 @@ def _markup_to_readable_text(
         if stripped:
             snippets.append(stripped)
     return "\n".join(snippets[:80])
+
+
+def _svg_element_summaries(text: str) -> list[str]:
+    cleaned = re.sub(r"(?is)<script\b.*?</script>", " ", text)
+    cleaned = re.sub(r"(?is)<style\b.*?</style>", " ", cleaned)
+    summaries: list[str] = []
+    seen: set[str] = set()
+    interesting_tags = ("use", "image", "text", "tspan", "symbol")
+    useful_attrs = (
+        "id",
+        "class",
+        "href",
+        "xlink:href",
+        "aria-label",
+        "alt",
+        "x",
+        "y",
+        "cx",
+        "cy",
+        "width",
+        "height",
+        "transform",
+    )
+    tag_pattern = re.compile(
+        r"(?is)<(?:[\w.-]+:)?("
+        + "|".join(re.escape(tag) for tag in interesting_tags)
+        + r")\b([^>]*)>(.*?)</(?:[\w.-]+:)?\1>|<(?:[\w.-]+:)?("
+        + "|".join(re.escape(tag) for tag in interesting_tags)
+        + r")\b([^>]*)/?>"
+    )
+    for match in tag_pattern.finditer(cleaned):
+        tag = (match.group(1) or match.group(4) or "").lower()
+        attr_text = match.group(2) or match.group(5) or ""
+        attr_values = _markup_attrs(attr_text, useful_attrs)
+        inner = _strip_markup_text(match.group(3) or "")
+        if inner and len(inner) <= 120:
+            attr_values.append(("text", inner))
+        if not attr_values:
+            continue
+        detail = " ".join(f"{name}={value!r}" for name, value in attr_values[:8])
+        summary = f"{tag}: {detail}"
+        if summary in seen:
+            continue
+        seen.add(summary)
+        summaries.append(summary)
+        if len(summaries) >= 60:
+            break
+    return summaries
+
+
+def _markup_attrs(attr_text: str, attr_names: tuple[str, ...]) -> list[tuple[str, str]]:
+    attrs: list[tuple[str, str]] = []
+    for attr in attr_names:
+        pattern = rf"""\b{re.escape(attr)}\s*=\s*(['"])(.*?)\1"""
+        match = re.search(pattern, attr_text or "", re.I | re.S)
+        if not match:
+            continue
+        value = html.unescape(match.group(2)).strip()
+        value = re.sub(r"\s+", " ", value)
+        if not value or len(value) > 240:
+            continue
+        attrs.append((attr, value))
+    return attrs
 
 
 def _strip_markup_text(text: str) -> str:
