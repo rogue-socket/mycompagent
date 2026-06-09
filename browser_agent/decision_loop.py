@@ -586,6 +586,8 @@ class DecisionLoop:
                         error = str(fetch_result.get("error") or "fetch_url failed")
                         self.last_step_error = error
                         self._record_failed_url(url, error)
+                    else:
+                        self._clear_failed_url_attempts(url)
                     self._log(
                         "Step "
                         f"{self.step}: fetch_url {status} - "
@@ -911,8 +913,11 @@ class DecisionLoop:
 
                 # Send execution result back to chat so the LLM knows what happened.
                 result_payload = {"status": exec_status}
-                if exec_status == "ok" and exec_result.stdout:
-                    result_payload["output"] = exec_result.stdout[:2000]
+                if exec_status == "ok":
+                    if parsed_action.command == "goto" and parsed_action.args:
+                        self._clear_failed_url_attempts(parsed_action.args[0])
+                    if exec_result.stdout:
+                        result_payload["output"] = exec_result.stdout[:2000]
                 elif exec_status != "ok":
                     result_payload["error"] = (exec_result.stderr or "command failed")[:500]
                     self.last_step_error = result_payload["error"]
@@ -1139,6 +1144,16 @@ class DecisionLoop:
         self.failed_url_attempts.append(FailedUrlAttempt(url=url, error=error))
         self.failed_url_attempts = self.failed_url_attempts[-20:]
 
+    def _clear_failed_url_attempts(self, url: str) -> None:
+        parsed = urlparse(url or "")
+        if not parsed.netloc:
+            return
+        self.failed_url_attempts = [
+            failed
+            for failed in self.failed_url_attempts
+            if urlparse(failed.url or "").netloc != parsed.netloc
+        ]
+
     def _failed_url_retry_warning(self, url: str) -> str:
         failed = _matching_failed_url(url, self.failed_url_attempts)
         if failed is None:
@@ -1146,8 +1161,9 @@ class DecisionLoop:
         return (
             "Recent URL failure guard: this URL or host already failed during this run "
             f"({failed.error}). Do not retry the same failed source or navigate to that "
-            "unreachable host. Use a different source, a search/result page, visible page "
-            "evidence, or a fetchable public text page instead."
+            "unusable host. Use a different source, a search/result page, visible page "
+            "evidence, official documentation for the source, or a fetchable public text "
+            "page instead."
         )
 
     def _failed_url_navigation_warning(self, parsed_action: Any) -> str:
@@ -1658,17 +1674,21 @@ def _matching_failed_url(
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     normalized = _normalized_url_for_retry(url)
+    same_host_client_failures: list[FailedUrlAttempt] = []
     for failed in reversed(failed_attempts):
         failed_parsed = urlparse(failed.url or "")
         if failed_parsed.scheme not in {"http", "https"} or not failed_parsed.netloc:
             continue
         if _normalized_url_for_retry(failed.url) == normalized:
             return failed
-        if (
-            parsed.netloc == failed_parsed.netloc
-            and _host_wide_failure(failed.error)
-        ):
+        if parsed.netloc != failed_parsed.netloc:
+            continue
+        if _host_wide_failure(failed.error):
             return failed
+        if _client_error_failure(failed.error):
+            same_host_client_failures.append(failed)
+            if len(same_host_client_failures) >= 2:
+                return failed
     return None
 
 
@@ -1690,6 +1710,14 @@ def _host_wide_failure(error: str) -> bool:
             "connection refused",
             "network is unreachable",
         )
+    )
+
+
+def _client_error_failure(error: str) -> bool:
+    lowered = (error or "").lower()
+    return bool(
+        re.search(r"\bhttp error\s+(400|401|403|404|405|410|422|429)\b", lowered)
+        or re.search(r"\b(status|status_code|status code)[=: ]+(400|401|403|404|405|410|422|429)\b", lowered)
     )
 
 

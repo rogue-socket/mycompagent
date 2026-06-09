@@ -1057,11 +1057,54 @@ class FailedUrlRetryPlanner:
                 "Try browser navigation to the same failed host.",
             )
         if step == 4:
-            self.testcase.assertIn("unreachable host", message)
+            self.testcase.assertIn("unusable host", message)
             return _tool(
                 "finish",
                 {"reason": "Failed URL retry guard was verified."},
                 "The loop rejected repeated failed-source attempts.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class ClientErrorHostRetryPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://api.example/data?shape=one", "max_chars": "12000"},
+                "Try the first public endpoint shape.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            return _tool(
+                "fetch_url",
+                {"url": "https://api.example/data?shape=two", "max_chars": "12000"},
+                "Try a second endpoint shape on the same source.",
+            )
+        if step == 3:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            return _tool(
+                "fetch_url",
+                {"url": "https://api.example/data?shape=three", "max_chars": "12000"},
+                "Try another parameter variant on the same source.",
+            )
+        if step == 4:
+            self.testcase.assertIn("Recent URL failure guard", message)
+            self.testcase.assertIn("unusable host", message)
+            return _tool(
+                "finish",
+                {"reason": "Client-error host retry guard was verified."},
+                "The loop rejected repeated malformed-source attempts.",
             )
         raise AssertionError(f"Unexpected planner step {step}")
 
@@ -1312,6 +1355,52 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[1]["command"], "fetch_url")
             self.assertEqual(actions[1]["execution_result"], "skipped")
             self.assertEqual(actions[1]["reason"], "recent_failed_url")
+            self.assertEqual(actions[2]["execution_result"], "skipped")
+            self.assertEqual(actions[2]["reason"], "recent_failed_url")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_repeated_client_error_host_retries_are_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = ClientErrorHostRetryPlanner(self)
+            executor = FetchUrlExecutor()
+            fetched_urls: list[str] = []
+
+            def url_fetcher(url: str, max_chars: int) -> dict:
+                fetched_urls.append(url)
+                error = "HTTP Error 400: Bad Request"
+                if "shape=two" in url:
+                    error = "HTTP Error 404: Not Found"
+                return {"status": "error", "url": url, "error": error}
+
+            loop = DecisionLoop(
+                task="Gather public evidence from a working source.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 5, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=url_fetcher,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(
+                fetched_urls,
+                [
+                    "https://api.example/data?shape=one",
+                    "https://api.example/data?shape=two",
+                ],
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "error")
+            self.assertEqual(actions[1]["execution_result"], "error")
             self.assertEqual(actions[2]["execution_result"], "skipped")
             self.assertEqual(actions[2]["reason"], "recent_failed_url")
             self.assertEqual(actions[-1]["command"], "finish")
