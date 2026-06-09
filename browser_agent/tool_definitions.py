@@ -190,6 +190,28 @@ _TOOLS: list[types.FunctionDeclaration] = [
         description="Take a screenshot of the current page.",
         parameters=types.Schema(type="OBJECT", properties={}),
     ),
+    types.FunctionDeclaration(
+        name="ask_human",
+        description=(
+            "Ask the human operator for missing information that is visible to "
+            "them but unavailable in the page state, such as a CAPTCHA. Use this "
+            "instead of finishing when the task can continue with a short answer."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "question": types.Schema(
+                    type="STRING",
+                    description="Short, specific question to show the human operator.",
+                ),
+                "reason": types.Schema(
+                    type="STRING",
+                    description="Why human input is needed.",
+                ),
+            },
+            required=["question"],
+        ),
+    ),
     # -- Tabs --
     types.FunctionDeclaration(
         name="tab_list",
@@ -294,9 +316,9 @@ _CLI_NAME_MAP: dict[str, str] = {
 def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
     """Convert a Gemini function call to a playwright-cli command string.
 
-    Returns ``None`` for the ``finish`` tool (not a CLI command).
+    Returns ``None`` for non-CLI tools.
     """
-    if name == "finish":
+    if name in {"finish", "ask_human"}:
         return None
 
     cli_name = _CLI_NAME_MAP.get(name, name)

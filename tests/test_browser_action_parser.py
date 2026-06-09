@@ -42,6 +42,11 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertEqual(action.command, "finish")
         self.assertEqual(action.action, "")
 
+    def test_ask_human_returns_non_cli_command(self) -> None:
+        action = parse_tool_call("ask_human", {"question": "What is the CAPTCHA?"})
+        self.assertEqual(action.command, "ask_human")
+        self.assertEqual(action.action, "")
+
     def test_invalid_ref_rejected(self) -> None:
         with self.assertRaises(ActionParseError):
             parse_tool_call("click", {"ref": "invalid"})

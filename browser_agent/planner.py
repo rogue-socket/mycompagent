@@ -57,12 +57,14 @@ Allowed tool names and arguments:
 - tab_new: {"url": "https://example.com"} or {}
 - tab_close/tab_select: {"index": "0"}
 - state_save/state_load: {"path": "auth.json"}
+- ask_human: {"question": "short specific question", "reason": "why this is needed"}
 - finish: {"reason": "what was completed"}
 
 Rules:
 - Return JSON only. No Markdown fences, prose, or tool call syntax.
 - Use only element refs from the current page state.
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
+- Use ask_human when a short missing value visible to the operator is needed to continue, such as CAPTCHA text.
 - Choose one action that advances the browser task."""
 
 

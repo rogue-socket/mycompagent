@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from browser_agent.action_parser import ActionParseError, parse_tool_call
 from browser_agent.approval_system import ask_approval, requires_approval
@@ -55,6 +55,7 @@ class DecisionLoop:
         open_args: list[str],
         debug: bool,
         memory: MemoryStore | None = None,
+        human_input: Callable[[str], str] | None = None,
     ) -> None:
         self.task = task
         self.mode = mode
@@ -66,6 +67,7 @@ class DecisionLoop:
         self.open_args = open_args
         self.debug = debug
         self.memory = memory
+        self.human_input = human_input or input
         self.step = 0
         self.errors = 0
         self.stop_reason = "unknown"
@@ -368,6 +370,66 @@ class DecisionLoop:
                         },
                     )
                     break
+
+                # ---- Handle human input tool ----
+                if tool_result.tool_name == "ask_human":
+                    question = tool_result.tool_args.get("question", "").strip()
+                    reason = tool_result.tool_args.get("reason", "").strip()
+                    if not question:
+                        question = "Please provide the missing information needed to continue."
+                    if not self._human_input_allowed():
+                        error = (
+                            "Human input was requested, but it is disabled for this run. "
+                            "Run with --ask-human in auto mode, or use safe/hybrid mode."
+                        )
+                        self.last_step_error = error
+                        self._log(f"Step {self.step}: ask_human skipped — {error}")
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "ask_human",
+                                "approval_status": "disabled",
+                                "execution_result": "skipped",
+                                "question": question,
+                                "reason": reason,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("ask_human skipped: " + question)
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": error},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
+
+                    self._log(f"Step {self.step}: awaiting human input — {question}")
+                    answer = self.human_input(f"\n[BrowserAgent] {question}\n> ").strip()
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": "ask_human",
+                            "approval_status": "human_input",
+                            "execution_result": "ok",
+                            "question": question,
+                            "reason": reason,
+                            "response_provided": bool(answer),
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append("ask_human answered: " + question)
+                    try:
+                        self.planner.send_tool_result(
+                            tool_result.tool_name,
+                            {"status": "ok", "answer": answer},
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
 
                 # ---- Parse tool call into CLI command ----
                 try:
@@ -711,6 +773,9 @@ class DecisionLoop:
         result = self.executor.run(open_command)
         if result.returncode != 0:
             raise PlaywrightExecutionError(result.stderr or "open failed")
+
+    def _human_input_allowed(self) -> bool:
+        return bool(self.config.get("allow_human_input", self.mode != "auto"))
 
     def _log(self, message: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")

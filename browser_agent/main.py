@@ -25,6 +25,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--safe", action="store_true", help="Require approval for every action")
     parser.add_argument("--hybrid", action="store_true", help="Require approval for risky actions")
     parser.add_argument("--auto", action="store_true", help="Fully autonomous mode")
+    parser.add_argument(
+        "--ask-human",
+        action="store_true",
+        help="Allow the planner to pause and ask for short human input in auto mode",
+    )
     parser.add_argument("--model", type=str, default=None, help="LLM model override")
     parser.add_argument(
         "--llm-provider",
@@ -157,6 +162,8 @@ def main() -> int:
             mode=mode_override,
             max_steps=args.max_steps,
         )
+        mode = str(config.get("mode", "safe"))
+        config["allow_human_input"] = bool(args.ask_human or mode in {"safe", "hybrid"})
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
