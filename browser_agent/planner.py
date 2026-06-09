@@ -51,6 +51,7 @@ Allowed tool names and arguments:
 - press: {"key": "Enter"}
 - scroll: {"dy": "900"} to scroll down, {"dy": "-900"} to scroll up
 - drag: {"source_ref": "e1", "target_ref": "e2"}
+- draw_circle: {"radius": "170", "steps": "24"} for freehand circle drawing games
 - upload: {"ref": "e1", "file_path": "/path/to/file"}
 - goto: {"url": "https://example.com"}
 - go_back/go_forward/reload/snapshot/screenshot/tab_list/close: {}
@@ -65,6 +66,7 @@ Rules:
 - Use only element refs from the current page state.
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
 - Use ask_human when a short missing value visible to the operator is needed to continue, such as CAPTCHA text.
+- Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
 - Choose one action that advances the browser task."""
 
 

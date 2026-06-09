@@ -46,6 +46,7 @@ def build_system_instruction(
         "- Use 'press' for keyboard keys like Enter, Tab, Escape.",
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
         "  autocomplete dropdowns often cover it and cause timeout errors.",
+        "- Use 'draw_circle' when a game asks for a freehand circle on a canvas-like surface.",
         "- Use 'ask_human' when a short value visible to the operator, such as CAPTCHA text, is needed to continue.",
         "- Call 'finish' when the task is complete.",
         "- Do NOT call 'snapshot' for recovery; every step already includes a fresh page state.",

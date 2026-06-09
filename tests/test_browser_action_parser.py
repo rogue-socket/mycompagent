@@ -62,6 +62,13 @@ class ToolCallParserTests(unittest.TestCase):
         action = parse_tool_call("drag", {"source_ref": "e1", "target_ref": "e2"})
         self.assertEqual(action.command, "drag")
 
+    def test_draw_circle_maps_to_guarded_run_code(self) -> None:
+        action = parse_tool_call("draw_circle", {"radius": "180", "steps": "24"})
+        self.assertEqual(action.command, "run-code")
+        self.assertIn("Drew circle", action.action)
+        self.assertIn("requestedRadius = 180", action.action)
+        self.assertIn("steps = 24", action.action)
+
     def test_drag_rejects_bad_ref(self) -> None:
         with self.assertRaises(ActionParseError):
             parse_tool_call("drag", {"source_ref": "e1", "target_ref": "bad"})

@@ -141,6 +141,26 @@ _TOOLS: list[types.FunctionDeclaration] = [
         ),
     ),
     types.FunctionDeclaration(
+        name="draw_circle",
+        description=(
+            "Draw one circular mouse path around the visible center target on a "
+            "canvas-style page. Use for drawing games that ask for a freehand circle."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "radius": types.Schema(
+                    type="STRING",
+                    description="Optional pixel radius, default 170, clamped to a safe range.",
+                ),
+                "steps": types.Schema(
+                    type="STRING",
+                    description="Optional number of path segments, default 24.",
+                ),
+            },
+        ),
+    ),
+    types.FunctionDeclaration(
         name="upload",
         description="Upload a file to a file input element.",
         parameters=types.Schema(
@@ -320,6 +340,8 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
     """
     if name in {"finish", "ask_human"}:
         return None
+    if name == "draw_circle":
+        return _draw_circle_command(args)
 
     cli_name = _CLI_NAME_MAP.get(name, name)
     parts = ["playwright-cli", cli_name]
@@ -358,3 +380,69 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
     # snapshot, screenshot, go_back, go_forward, reload, close — no extra args
 
     return " ".join(shlex.quote(part) for part in parts)
+
+
+def _draw_circle_command(args: dict[str, str]) -> str:
+    radius = _int_arg(args.get("radius"), default=170, minimum=40, maximum=320)
+    steps = _int_arg(args.get("steps"), default=24, minimum=16, maximum=72)
+    code = f"""async page => {{
+  const requestedRadius = {radius};
+  const steps = {steps};
+  const target = await page.evaluate((requestedRadius) => {{
+    const visible = (el) => {{
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      return (
+        rect.width > 5 &&
+        rect.height > 5 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden'
+      );
+    }};
+    const rectInfo = (el) => {{
+      const rect = el.getBoundingClientRect();
+      const cx = rect.x + rect.width / 2;
+      const cy = rect.y + rect.height / 2;
+      return {{ x: rect.x, y: rect.y, width: rect.width, height: rect.height, cx, cy }};
+    }};
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const main = document.querySelector('main') || document.body;
+    const candidates = Array.from(main.querySelectorAll('canvas, img, svg'))
+      .filter(visible)
+      .map(rectInfo)
+      .sort((a, b) => {{
+        const da = Math.hypot(a.cx - vw / 2, a.cy - vh / 2);
+        const db = Math.hypot(b.cx - vw / 2, b.cy - vh / 2);
+        return da - db;
+      }});
+    const center = candidates[0] || {{ cx: vw / 2, cy: vh / 2 }};
+    const edgeLimit = Math.max(
+      40,
+      Math.min(center.cx - 8, vw - center.cx - 8, center.cy - 8, vh - center.cy - 8)
+    );
+    const radius = Math.max(40, Math.min(requestedRadius, edgeLimit));
+    return {{ cx: center.cx, cy: center.cy, radius }};
+  }}, requestedRadius);
+  await page.mouse.move(target.cx + target.radius, target.cy);
+  await page.mouse.down();
+  for (let i = 1; i <= steps; i += 1) {{
+    const angle = (Math.PI * 2 * i) / steps;
+    await page.mouse.move(
+      target.cx + Math.cos(angle) * target.radius,
+      target.cy + Math.sin(angle) * target.radius
+    );
+  }}
+  await page.mouse.up();
+  await page.waitForTimeout(1500);
+  return `Drew circle at ${{Math.round(target.cx)}},${{Math.round(target.cy)}} radius ${{Math.round(target.radius)}}`;
+}}"""
+    return "playwright-cli run-code " + shlex.quote(code)
+
+
+def _int_arg(value: str | None, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(str(value)) if value is not None else default
+    except ValueError:
+        parsed = default
+    return max(minimum, min(maximum, parsed))
