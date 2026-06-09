@@ -310,6 +310,32 @@ counter as the atomic-number total and repeatedly made arithmetic guesses. That
 is a different class of failure: the agent needs deterministic helper support
 for rule arithmetic and domain solvers, not just more visual extraction.
 
+Follow-up runs `runs/run_20260609T115854Z` and `runs/run_20260609T121936Z`
+validated the first deterministic helper for Rule 18. The planner now has a
+non-CLI `password_game_elements` tool. It scores the current password with the
+Password Game element parser, returns the counted symbols, and can return a
+full `suggested_password` when simple appends are not enough. In the live run,
+the helper repaired:
+
+```text
+WHARFmay149!VIIxVPepsicdcb3🌘Finland2000Bf6+🥚
+```
+
+to:
+
+```text
+whArfmay149!VIIxVPepsicdcb3🌘Finland2000Bf6+🥚H
+```
+
+which scores exactly 200 for Rule 18 while preserving the roman numeral,
+sponsor, chess move, country, moon, and Paul egg spans.
+
+The same rerun exposed the next backlog item. When a fresh CAPTCHA changed the
+digit sum, the planner tried to compensate by changing the confirmed chess move
+from `Bf6+` to `Bf3+`. Password Game runs now explicitly tell the planner to
+preserve confirmed rule-bearing substrings and adjust padding digits or leap-year
+choices instead, but this still needs a full rerun past Rule 18.
+
 ## 4) Login Flows
 
 ### 4.1 Recommended login flow (safe + persistent)
