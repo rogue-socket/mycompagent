@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import re
 import shlex
@@ -501,6 +502,7 @@ class DecisionLoop:
                             "execution_result": status,
                             "url": url,
                             "content_type": fetch_result.get("content_type", ""),
+                            "text_format": fetch_result.get("text_format", ""),
                             "chars": fetch_result.get("chars", 0),
                             "truncated": fetch_result.get("truncated", False),
                             "error": fetch_result.get("error", ""),
@@ -1537,6 +1539,10 @@ def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
         }
 
     text = raw.decode(charset, errors="replace")
+    text_format = "text"
+    if _looks_html_text(text, content_type):
+        text = _html_to_readable_text(text)
+        text_format = "html_text"
     text_truncated = len(text) > limit
     text = text[:limit]
     return {
@@ -1545,6 +1551,7 @@ def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
         "final_url": final_url,
         "content_type": content_type,
         "status_code": status_code,
+        "text_format": text_format,
         "text": text,
         "chars": len(text),
         "truncated": raw_truncated or text_truncated,
@@ -1569,6 +1576,25 @@ def _looks_binary(raw: bytes, content_type: str) -> bool:
         return False
     control = sum(1 for byte in raw[:1024] if byte < 9 or 13 < byte < 32)
     return control / min(len(raw), 1024) > 0.1
+
+
+def _looks_html_text(text: str, content_type: str) -> bool:
+    lowered_type = (content_type or "").lower()
+    if "html" in lowered_type:
+        return True
+    return bool(re.search(r"<(?:html|head|body|title|script|style|div|span)\b", text[:2000], re.I))
+
+
+def _html_to_readable_text(text: str) -> str:
+    cleaned = re.sub(r"(?is)<script\b.*?</script>", " ", text)
+    cleaned = re.sub(r"(?is)<style\b.*?</style>", " ", cleaned)
+    cleaned = re.sub(r"(?is)<noscript\b.*?</noscript>", " ", cleaned)
+    cleaned = re.sub(r"(?i)<br\s*/?>", "\n", cleaned)
+    cleaned = re.sub(r"(?i)</(?:p|div|section|article|li|tr|h[1-6])>", "\n", cleaned)
+    cleaned = re.sub(r"(?s)<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    lines = [re.sub(r"\s+", " ", line).strip() for line in cleaned.splitlines()]
+    return "\n".join(line for line in lines if line)
 
 
 def _hash_text(text: str) -> str:

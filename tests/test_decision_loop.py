@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from browser_agent.decision_loop import DecisionLoop, RunResult
+from browser_agent.decision_loop import (
+    DecisionLoop,
+    RunResult,
+    _html_to_readable_text,
+    _looks_html_text,
+)
 from browser_agent.logger import RunPaths, append_jsonl
 from browser_agent.memory import Lesson, MemoryStore
 from browser_agent.planner import ToolCallResult
@@ -1014,6 +1019,29 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_fetch_html_text_is_normalized_for_planner_evidence(self) -> None:
+        raw_html = """
+        <html>
+          <head>
+            <title>Example Fact Page</title>
+            <style>.hidden { display: none }</style>
+            <script>window.noise = true;</script>
+          </head>
+          <body>
+            <h1>Example Fact Page</h1>
+            <p>Current value: Waxing Crescent.</p>
+          </body>
+        </html>
+        """
+
+        text = _html_to_readable_text(raw_html)
+
+        self.assertTrue(_looks_html_text(raw_html, "text/html"))
+        self.assertIn("Example Fact Page", text)
+        self.assertIn("Current value: Waxing Crescent.", text)
+        self.assertNotIn("window.noise", text)
+        self.assertNotIn("<p>", text)
+
     def test_speculative_variant_fill_after_failed_lookup_is_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
