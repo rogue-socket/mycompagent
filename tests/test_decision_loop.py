@@ -5,8 +5,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from browser_agent.action_parser import parse_tool_call
 from browser_agent.decision_loop import (
     DecisionLoop,
+    ProtectedValueFragment,
     RunResult,
     fetch_public_text_url,
     _html_to_readable_text,
@@ -14,6 +16,7 @@ from browser_agent.decision_loop import (
     _looks_html_text,
     _looks_json_text,
     _looks_svg_text,
+    _protected_fragment_fill_warning,
     _status_indicators_from_dom_evidence,
     _svg_to_readable_text,
 )
@@ -107,6 +110,42 @@ class PublicFetchTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["text_format"], "source_text")
         self.assertIn("const answer", result["text"])
+
+
+class ProtectedFragmentGuardTests(unittest.TestCase):
+    def test_blocks_removing_unrelated_successful_fragment(self) -> None:
+        action = parse_tool_call("fill", {"ref": "e15", "value": "baseY"})
+        elements = [ElementRef(ref="e15", description='textbox "Value" : "baseX"')]
+
+        warning = _protected_fragment_fill_warning(
+            action,
+            elements,
+            "",
+            [ProtectedValueFragment("Requirement B has confirmed addition.", "X")],
+            {
+                "Requirement B has confirmed addition.": "success",
+                "Requirement C needs final token.": "error",
+            },
+        )
+
+        self.assertIn("Protected fragment guard", warning)
+
+    def test_allows_removing_fragment_that_can_affect_failing_requirement(self) -> None:
+        action = parse_tool_call("fill", {"ref": "e15", "value": "baseY"})
+        elements = [ElementRef(ref="e15", description='textbox "Value" : "baseM"')]
+
+        warning = _protected_fragment_fill_warning(
+            action,
+            elements,
+            "",
+            [ProtectedValueFragment("Requirement B has confirmed addition.", "M")],
+            {
+                "Requirement B has confirmed addition.": "success",
+                "Requirement C roman value must equal target.": "error",
+            },
+        )
+
+        self.assertEqual(warning, "")
 
 
 class AriaComboboxExecutor:

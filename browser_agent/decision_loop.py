@@ -2042,12 +2042,17 @@ def _protected_fragment_fill_warning(
         return ""
 
     missing: list[ProtectedValueFragment] = []
+    failing_labels = [
+        label for label, status in current_statuses.items() if status == "error"
+    ]
     for protected in protected_fragments:
         if current_statuses.get(protected.status_label) != "success":
             continue
         if protected.fragment not in current_value:
             continue
         if protected.fragment not in intended_value:
+            if _fragment_may_affect_failing_status(protected.fragment, failing_labels):
+                continue
             missing.append(protected)
     if not missing:
         return ""
@@ -2062,6 +2067,43 @@ def _protected_fragment_fill_warning(
         "Preserve them while adding or changing only the part needed for the "
         "currently failing requirement, then verify the status indicators."
     )
+
+
+def _fragment_may_affect_failing_status(fragment: str, failing_labels: list[str]) -> bool:
+    if not fragment or not failing_labels:
+        return False
+
+    has_digit = any(ch.isdigit() for ch in fragment)
+    has_upper = any(ch.isupper() for ch in fragment)
+    has_lower = any(ch.islower() for ch in fragment)
+    has_letter = any(ch.isalpha() for ch in fragment)
+    has_special = any(not ch.isalnum() and not ch.isspace() for ch in fragment)
+    has_non_ascii = any(ord(ch) > 127 for ch in fragment)
+    has_roman = any(ch in "IVXLCDMivxlcdm" for ch in fragment)
+
+    for label in failing_labels:
+        lowered = label.lower()
+        if has_roman and "roman" in lowered:
+            return True
+        if has_digit and any(token in lowered for token in ("digit", "number")):
+            return True
+        if has_upper and any(token in lowered for token in ("uppercase", "capital")):
+            return True
+        if has_lower and "lowercase" in lowered:
+            return True
+        if has_special and any(
+            token in lowered for token in ("special", "symbol", "punctuation")
+        ):
+            return True
+        if has_letter and any(
+            token in lowered for token in ("letter", "vowel", "consonant", "alphabet")
+        ):
+            return True
+        if has_non_ascii and any(token in lowered for token in ("emoji", "unicode")):
+            return True
+        if any(token in lowered for token in ("length", "character", "char")):
+            return True
+    return False
 
 
 def _rich_text_plain_fill_warning(
