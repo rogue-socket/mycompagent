@@ -99,6 +99,18 @@ class ToolCallParserTests(unittest.TestCase):
         self.assertIn("document.activeElement", action.action)
         self.assertIn("setSelectionRange", action.action)
 
+    def test_extract_page_text_maps_to_bounded_run_code(self) -> None:
+        action = parse_tool_call(
+            "extract_page_text",
+            {"query": "List of Correct Moves", "max_chars": "9000"},
+        )
+
+        self.assertEqual(action.command, "run-code")
+        self.assertIn("List of Correct Moves", action.action)
+        self.assertIn("maxChars = 9000", action.action)
+        self.assertIn("document.body", action.action)
+        self.assertIn("query_snippets", action.action)
+
     def test_drag_rejects_bad_ref(self) -> None:
         with self.assertRaises(ActionParseError):
             parse_tool_call("drag", {"source_ref": "e1", "target_ref": "bad"})

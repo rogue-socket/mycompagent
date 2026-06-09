@@ -69,6 +69,8 @@ class CodexPlannerTests(unittest.TestCase):
         self.assertEqual(result.reasoning_text, "page has answer")
         self.assertIn("Return exactly one JSON object", model.prompts[0])
         self.assertIn("Do not choose snapshot unless the user explicitly asked", model.prompts[0])
+        self.assertIn("extract_page_text", model.prompts[0])
+        self.assertIn("instead of repeatedly scrolling", model.prompts[0])
 
     def test_retries_invalid_json(self) -> None:
         model = _FakeModel(

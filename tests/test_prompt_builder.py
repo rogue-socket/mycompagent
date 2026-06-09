@@ -39,6 +39,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("text-like asset URL", message)
         self.assertIn("increase max_chars", message)
         self.assertIn("narrower source", message)
+        self.assertIn("use 'extract_page_text' with a query", message)
+        self.assertIn("instead of repeatedly scrolling", message)
         self.assertIn("switch back to the original task tab", message)
         self.assertIn("about:blank tab already exists", message)
         self.assertIn("reuse it for lookup work", message)

@@ -124,6 +124,30 @@ _TOOLS: list[types.FunctionDeclaration] = [
         ),
     ),
     types.FunctionDeclaration(
+        name="extract_page_text",
+        description=(
+            "Extract bounded text from the currently loaded page without scrolling. "
+            "Use this for long articles, docs, tables, or result pages when visible "
+            "viewport text is insufficient."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "query": types.Schema(
+                    type="STRING",
+                    description=(
+                        "Optional exact text to search for. When provided, returns "
+                        "snippets around matching occurrences."
+                    ),
+                ),
+                "max_chars": types.Schema(
+                    type="STRING",
+                    description="Maximum returned text characters. Defaults to 12000.",
+                ),
+            },
+        ),
+    ),
+    types.FunctionDeclaration(
         name="scroll",
         description="Scroll the page vertically with the mouse wheel. Positive dy scrolls down; negative dy scrolls up.",
         parameters=types.Schema(
@@ -406,6 +430,8 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
         return _format_selection_command(args)
     if name == "select_text":
         return _select_text_command(args)
+    if name == "extract_page_text":
+        return _extract_page_text_command(args)
 
     cli_name = _CLI_NAME_MAP.get(name, name)
     parts = ["playwright-cli", cli_name]
@@ -606,6 +632,58 @@ def _select_text_command(args: dict[str, str]) -> str:
     active.focus();
     return {{ selectedText: String(selection).slice(0, 200), start }};
   }}, {{ targetText, occurrence }});
+  return result;
+}}"""
+    return "playwright-cli run-code " + shlex.quote(code)
+
+
+def _extract_page_text_command(args: dict[str, str]) -> str:
+    query = str(args.get("query") or "").strip()
+    max_chars = _int_arg(args.get("max_chars"), default=12000, minimum=1000, maximum=50000)
+    code = f"""async page => {{
+  const query = {query!r};
+  const maxChars = {max_chars};
+  const result = await page.evaluate(({{
+    query,
+    maxChars,
+  }}) => {{
+    const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+    const fullText = normalize(document.body ? document.body.innerText : '');
+    if (!query) {{
+      return {{
+        mode: 'page_text',
+        chars: Math.min(fullText.length, maxChars),
+        truncated: fullText.length > maxChars,
+        text: fullText.slice(0, maxChars),
+      }};
+    }}
+    const lowered = fullText.toLowerCase();
+    const needle = query.toLowerCase();
+    const snippets = [];
+    let from = 0;
+    while (snippets.length < 12) {{
+      const index = lowered.indexOf(needle, from);
+      if (index < 0) break;
+      const start = Math.max(0, index - 500);
+      const end = Math.min(fullText.length, index + query.length + 500);
+      snippets.push({{
+        index,
+        text: fullText.slice(start, end),
+      }});
+      from = index + Math.max(1, query.length);
+    }}
+    const joined = snippets
+      .map((snippet, index) => `[${{index + 1}} @ ${{snippet.index}}] ${{snippet.text}}`)
+      .join('\\n---\\n');
+    return {{
+      mode: 'query_snippets',
+      query,
+      matches: snippets.length,
+      chars: Math.min(joined.length, maxChars),
+      truncated: joined.length > maxChars,
+      text: joined.slice(0, maxChars),
+    }};
+  }}, {{ query, maxChars }});
   return result;
 }}"""
     return "playwright-cli run-code " + shlex.quote(code)
