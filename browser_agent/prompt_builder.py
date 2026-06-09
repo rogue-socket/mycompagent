@@ -47,6 +47,7 @@ def build_system_instruction(
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
         "  autocomplete dropdowns often cover it and cause timeout errors.",
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
+        "- For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints. Before editing a value, compare the current requirements/status lines with the current value, make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.",
         "- Use 'draw_circle' when a game asks for a freehand circle on a canvas-like surface.",
         "- Use 'ask_human' when a short value visible to the operator, such as CAPTCHA text, is needed to continue.",
         "- Call 'finish' when the task is complete.",

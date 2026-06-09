@@ -68,6 +68,7 @@ Rules:
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
 - Use ask_human when a short missing value visible to the operator is needed to continue, such as CAPTCHA text.
 - Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.
+- For multi-rule or requirement-driven tasks, preserve earlier satisfied constraints; make the smallest reversible edit that targets the unsatisfied constraint, then verify what changed.
 - Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
 - Use format_selection for rich-text formatting on selected editable text instead of clicking toolbar buttons when possible.
 - Choose one action that advances the browser task."""

@@ -46,6 +46,17 @@ _LIMITED_SCOPE_RE = re.compile(
     re.I,
 )
 _SNIPPET_HINT_RE = re.compile(r"\bsnippets?\b|\bfrom google\b|\bsearch results\b", re.I)
+_CONSTRAINT_HINT_RE = re.compile(
+    r"\b("
+    r"rule|requirement|condition|constraint|must|required|requires|need|needs|"
+    r"invalid|valid|satisfied|accepted|complete|incorrect|error|warning|remaining"
+    r")\b",
+    re.I,
+)
+_CONSTRAINT_LABEL_RE = re.compile(
+    r"\b(?:rule|requirement|condition|constraint|step)\s*#?\d+\b",
+    re.I,
+)
 _SEARCH_HOSTS = {
     "google.com",
     "www.google.com",
@@ -126,12 +137,22 @@ class SlotEvidence:
     context: str
 
 
+@dataclass(slots=True)
+class ConstraintObservation:
+    """One recent page-level requirement or status line."""
+
+    step: int
+    text: str
+
+
 @dataclass
 class EvidenceLedger:
     """Accumulated evidence relevant to task completion."""
 
     observations: list[EvidenceObservation] = field(default_factory=list)
+    constraints: list[ConstraintObservation] = field(default_factory=list)
     _seen: set[tuple[str, str, str, Decimal, int | None]] = field(default_factory=set)
+    _seen_constraints: set[str] = field(default_factory=set)
     visited_domains: set[str] = field(default_factory=set)
 
     def add_page(
@@ -143,6 +164,7 @@ class EvidenceLedger:
         text: str,
         contract: TaskContract,
     ) -> None:
+        self._add_constraints(step=step, text=text)
         if not contract.active:
             return
         domain = _domain_from_url(url)
@@ -202,9 +224,13 @@ class EvidenceLedger:
             self.observations.append(observation)
 
     def summary(self, contract: TaskContract, max_items: int = 6) -> str:
-        if not contract.active:
+        if not contract.active and not self.constraints:
             return ""
         lines: list[str] = []
+        if self.constraints:
+            lines.append("Recent observed constraints/status:")
+            for item in self.constraints[-max_items:]:
+                lines.append(f"- step {item.step}: {item.text}")
         if contract.is_price_comparison:
             lines.append(
                 "Task requires comparing candidate prices before claiming cheapest."
@@ -320,6 +346,16 @@ class EvidenceLedger:
             if domain and not _is_search_host(domain)
         }
 
+    def _add_constraints(self, *, step: int, text: str, max_items: int = 16) -> None:
+        for candidate in _constraint_candidates(text):
+            key = _normalise_constraint(candidate)
+            if key in self._seen_constraints:
+                continue
+            self._seen_constraints.add(key)
+            self.constraints.append(ConstraintObservation(step=step, text=candidate))
+        if len(self.constraints) > max_items:
+            self.constraints = self.constraints[-max_items:]
+
     @staticmethod
     def _format_observation(obs: EvidenceObservation) -> str:
         details = [f"{obs.currency} {obs.amount}", obs.source_key]
@@ -406,6 +442,59 @@ def _time_to_minutes(hour: int, minute: int, ampm: str) -> int:
 
 def _meaningful_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _constraint_candidates(text: str) -> list[str]:
+    lines = [_clean_observable_line(line) for line in text.splitlines()]
+    lines = [line for line in lines if line]
+    candidates: list[str] = []
+    for index, line in enumerate(lines):
+        if _CONSTRAINT_LABEL_RE.search(line):
+            combined = line
+            if index + 1 < len(lines) and not _CONSTRAINT_LABEL_RE.search(lines[index + 1]):
+                combined = f"{line}: {lines[index + 1]}"
+            candidates.append(_clip_constraint(combined))
+            continue
+        if _CONSTRAINT_HINT_RE.search(line):
+            candidates.append(_clip_constraint(line))
+    return _dedupe_preserving_order(candidates)
+
+
+def _clean_observable_line(line: str) -> str:
+    cleaned = line.strip()
+    cleaned = re.sub(r"^-+\s*", "", cleaned)
+    cleaned = re.sub(r"^e\d+:\s*", "", cleaned, flags=re.I)
+    role_match = re.search(
+        r'\b(?:text|heading|paragraph|alert|status|button|link)\s+"([^"]+)"',
+        cleaned,
+    )
+    if role_match:
+        cleaned = role_match.group(1)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if cleaned.lower().startswith(("url:", "page url:", "title:", "page title:")):
+        return ""
+    return cleaned
+
+
+def _clip_constraint(text: str, limit: int = 220) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    return cleaned[:limit]
+
+
+def _normalise_constraint(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower()).strip()
+
+
+def _dedupe_preserving_order(items: Iterable[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _normalise_constraint(item)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _context_window(lines: list[str], index: int, radius: int = 4) -> str:

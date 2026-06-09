@@ -237,3 +237,69 @@ def test_finish_accepts_lowest_eligible_price() -> None:
     )
 
     assert validation.accepted
+
+
+def test_constraint_ledger_summarizes_generic_numbered_requirements() -> None:
+    contract = build_task_contract("Complete the interactive form.")
+    ledger = EvidenceLedger()
+
+    ledger.add_page(
+        step=3,
+        url="https://example.com/form",
+        title="Interactive Form",
+        text=(
+            'text "Requirement 1"\n'
+            'text "The entry must contain a symbol."\n'
+            'text "Requirement 2"\n'
+            'text "The total must equal 200."\n'
+            'text "Status: Requirement 1 satisfied."\n'
+        ),
+        contract=contract,
+    )
+
+    summary = ledger.summary(contract)
+
+    assert "Recent observed constraints/status:" in summary
+    assert "Requirement 1: The entry must contain a symbol." in summary
+    assert "Requirement 2: The total must equal 200." in summary
+    assert "Status: Requirement 1 satisfied." in summary
+
+
+def test_constraint_ledger_dedupes_repeated_status_lines() -> None:
+    contract = build_task_contract("Complete the interactive form.")
+    ledger = EvidenceLedger()
+    text = 'text "Rule 1"\ntext "The value must be at least 5 characters."\n'
+
+    ledger.add_page(
+        step=1,
+        url="https://example.com/form",
+        title="Interactive Form",
+        text=text,
+        contract=contract,
+    )
+    ledger.add_page(
+        step=2,
+        url="https://example.com/form",
+        title="Interactive Form",
+        text=text,
+        contract=contract,
+    )
+
+    summary = ledger.summary(contract)
+
+    assert summary.count("Rule 1: The value must be at least 5 characters.") == 1
+
+
+def test_constraint_ledger_preserves_plain_status_prefixes() -> None:
+    contract = build_task_contract("Complete the interactive form.")
+    ledger = EvidenceLedger()
+
+    ledger.add_page(
+        step=1,
+        url="https://example.com/form",
+        title="Interactive Form",
+        text="Status: Requirement 1 satisfied.",
+        contract=contract,
+    )
+
+    assert "Status: Requirement 1 satisfied." in ledger.summary(contract)

@@ -12,6 +12,13 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Do NOT call 'snapshot' for recovery", message)
         self.assertNotIn("If you are stuck, try 'snapshot'", message)
 
+    def test_system_prompt_guides_generic_requirement_driven_edits(self) -> None:
+        message = build_system_instruction("Complete an interactive form.")
+
+        self.assertIn("multi-rule or requirement-driven tasks", message)
+        self.assertIn("preserve earlier satisfied constraints", message)
+        self.assertIn("smallest reversible edit", message)
+
     def test_task_relevant_links_are_prioritized_in_message(self) -> None:
         elements = [
             ClickableElement(f"e{i}", "link", f'link "Unrelated {i}"', f"/wiki/U{i}", "article")
