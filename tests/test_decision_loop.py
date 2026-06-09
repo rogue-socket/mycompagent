@@ -994,6 +994,95 @@ class CurrentTabNoopPlanner:
         pass
 
 
+class ExistingBlankTabExecutor:
+    def __init__(self) -> None:
+        self.current_tab = 0
+        self.loaded_lookup = False
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command == "playwright-cli tab-select 1":
+            self.current_tab = 1
+            return CommandResult(
+                command,
+                0,
+                "### Result\n- 0: [Task](https://example.com/task)\n"
+                "- 1: (current) [](about:blank)",
+                "",
+            )
+        if command == "playwright-cli goto https://lookup.example/data":
+            self.loaded_lookup = True
+            return CommandResult(command, 0, "Loaded lookup data", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        if self.current_tab == 1:
+            lookup_line = "- 1: (current) [](about:blank)"
+            if self.loaded_lookup:
+                lookup_line = "- 1: (current) [Lookup](https://lookup.example/data)"
+            lines = [
+                "### Open tabs",
+                "- 0: [Task](https://example.com/task)",
+                lookup_line,
+            ]
+            if self.loaded_lookup:
+                lines.append('  - text "Lookup loaded"')
+            return CommandResult("playwright-cli snapshot", 0, "\n".join(lines) + "\n", "")
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            "\n".join(
+                [
+                    "### Open tabs",
+                    "- 0: (current) [Task](https://example.com/task)",
+                    "- 1: [](about:blank)",
+                    "Page URL: https://example.com/task",
+                    "Page Title: Task",
+                    "Snapshot",
+                    '  - textbox "Value" : "base" [ref=e15]',
+                ]
+            )
+            + "\n",
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        if self.loaded_lookup:
+            return "Lookup loaded"
+        if self.current_tab == 0:
+            return "Task value base"
+        return ""
+
+
+class ExistingBlankTabPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool("tab_new", {}, "Open another blank lookup tab.")
+        if step == 2:
+            self.testcase.assertIn("Blank tab 1 already exists", message)
+            self.testcase.assertIn("Do not open another blank tab", message)
+            return _tool("tab_select", {"index": "1"}, "Reuse the existing blank tab.")
+        if step == 3:
+            return _tool("goto", {"url": "https://lookup.example/data"}, "Load lookup data.")
+        if step == 4:
+            return _tool("finish", {"reason": "Existing blank tab was reused."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 class StaleRefGuardExecutor:
     def __init__(self) -> None:
         self.current_tab = 1
@@ -2315,6 +2404,37 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             actions = _read_jsonl(paths.actions_log)
             self.assertEqual(actions[0]["execution_result"], "skipped")
             self.assertEqual(actions[0]["reason"], "tab_already_current")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_opening_extra_blank_tab_is_skipped_when_blank_tab_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = ExistingBlankTabPlanner(self)
+            executor = ExistingBlankTabExecutor()
+            loop = DecisionLoop(
+                task="Use a helper tab for lookup work.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 5, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli tab-new", executor.commands)
+            self.assertIn("playwright-cli tab-select 1", executor.commands)
+            self.assertIn("playwright-cli goto https://lookup.example/data", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "blank_tab_already_available")
+            self.assertEqual(actions[1]["command"], "playwright-cli tab-select 1")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_stale_element_ref_is_skipped_before_execution(self) -> None:

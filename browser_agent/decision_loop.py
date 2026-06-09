@@ -846,6 +846,27 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                redundant_blank_tab = _existing_blank_tab_warning(
+                    parsed_action,
+                    snapshot_state.raw_text,
+                )
+                if redundant_blank_tab:
+                    self.last_step_error = redundant_blank_tab
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "blank_tab_already_available",
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 missing_text_target = self._ungrounded_text_input_warning(
                     parsed_action,
                     interpreter_state,
@@ -1807,6 +1828,35 @@ def _current_tab_selection_noop(parsed_action: Any, snapshot_text: str) -> str:
         "lookup URL in this tab with goto, switch to a different useful tab, or return "
         "to the task tab only when ready to edit visible task controls."
     )
+
+
+def _existing_blank_tab_warning(parsed_action: Any, snapshot_text: str) -> str:
+    if parsed_action.command != "tab-new":
+        return ""
+    blank_index = _first_blank_tab_index(snapshot_text)
+    if blank_index is None:
+        return ""
+    current_index = _current_tab_index(snapshot_text)
+    if current_index == blank_index:
+        return (
+            f"Blank tab {blank_index} is already the current tab. Creating another "
+            "blank tab only adds tab clutter. Load the needed lookup URL in this "
+            "current blank tab with goto, or switch back to the task tab if lookup "
+            "work is complete."
+        )
+    return (
+        f"Blank tab {blank_index} already exists. Do not open another blank tab. "
+        f"Select tab {blank_index} for lookup work, or use an existing loaded "
+        "lookup tab before returning to task controls."
+    )
+
+
+def _first_blank_tab_index(snapshot_text: str) -> int | None:
+    for line in (snapshot_text or "").splitlines():
+        match = re.search(r"^\s*-\s*(\d+):.*\]\(about:blank\)", line)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def _current_tab_index(snapshot_text: str) -> int | None:
