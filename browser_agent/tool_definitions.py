@@ -284,12 +284,7 @@ _TOOLS: list[types.FunctionDeclaration] = [
     types.FunctionDeclaration(
         name="tab_new",
         description="Open a new blank browser tab. To load a URL in it, call goto next.",
-        parameters=types.Schema(
-            type="OBJECT",
-            properties={
-                "url": types.Schema(type="STRING", description="Optional URL to open in the new tab"),
-            },
-        ),
+        parameters=types.Schema(type="OBJECT", properties={}),
     ),
     types.FunctionDeclaration(
         name="tab_close",

@@ -39,6 +39,7 @@ def parse_tool_call(tool_name: str, tool_args: dict[str, str]) -> ParsedAction:
 
     # Validate element refs where required.
     _validate_ref_args(tool_name, tool_args)
+    _validate_tab_args(tool_name, tool_args)
 
     cli_command = tool_call_to_cli(tool_name, tool_args)
     if cli_command is None:
@@ -84,6 +85,17 @@ def _validate_ref_args(tool_name: str, tool_args: dict[str, str]) -> None:
                 f"Tool '{tool_name}' requires a valid element ref for '{key}' "
                 f"(e.g. e12), got: '{value}'"
             )
+
+
+def _validate_tab_args(tool_name: str, tool_args: dict[str, str]) -> None:
+    if tool_name != "tab_new":
+        return
+    if not str(tool_args.get("url", "")).strip():
+        return
+    raise ActionParseError(
+        "tab_new opens a blank tab and does not accept a URL. Call tab_new with "
+        "no arguments, then call goto with the URL in the new current tab."
+    )
 
 
 def _is_element_ref(value: str) -> bool:
