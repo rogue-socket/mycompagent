@@ -996,11 +996,45 @@ class SpeculativeVariantPlanner:
                 "The lookup failed, so I will try the most likely candidate suffix.",
             )
         if step == 3:
-            self.testcase.assertIn("Speculative variant fill guard", message)
+            self.testcase.assertIn("Speculative variant edit guard", message)
             self.testcase.assertIn("Gather stronger evidence", message)
             return _tool(
                 "finish",
-                {"reason": "Speculative fill was blocked."},
+                {"reason": "Speculative edit was blocked."},
+                "Guard behavior verified.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        pass
+
+
+class SpeculativeBulkTypePlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/missing", "max_chars": "12000"},
+                "Try a public evidence source first.",
+            )
+        if step == 2:
+            return _tool(
+                "type",
+                {"text": "ABCDEF"},
+                "The lookup failed, so I will add all possible candidate tokens.",
+            )
+        if step == 3:
+            self.testcase.assertIn("Speculative variant edit guard", message)
+            self.testcase.assertIn("bulk-insert possible answers", message)
+            return _tool(
+                "finish",
+                {"reason": "Speculative bulk type was blocked."},
                 "Guard behavior verified.",
             )
         raise AssertionError(f"Unexpected planner step {step}")
@@ -1153,7 +1187,41 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             actions = _read_jsonl(paths.actions_log)
             self.assertEqual(actions[0]["command"], "fetch_url")
             self.assertEqual(actions[1]["execution_result"], "skipped")
-            self.assertEqual(actions[1]["reason"], "speculative_variant_fill")
+            self.assertEqual(actions[1]["reason"], "speculative_variant_edit")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_speculative_bulk_type_after_failed_lookup_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = SpeculativeBulkTypePlanner(self)
+            executor = SpeculativeVariantExecutor()
+            loop = DecisionLoop(
+                task="Complete a stateful requirement form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=lambda url, max_chars: {
+                    "status": "error",
+                    "url": url,
+                    "error": "not found",
+                },
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli type ABCDEF", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "fetch_url")
+            self.assertEqual(actions[1]["execution_result"], "skipped")
+            self.assertEqual(actions[1]["reason"], "speculative_variant_edit")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_short_variant_fill_after_successful_latest_lookup_is_allowed(self) -> None:
@@ -1195,7 +1263,7 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertIn("playwright-cli fill e15 baseX", executor.commands)
             actions = _read_jsonl(paths.actions_log)
             self.assertEqual(actions[2]["execution_result"], "ok")
-            self.assertNotEqual(actions[2].get("reason"), "speculative_variant_fill")
+            self.assertNotEqual(actions[2].get("reason"), "speculative_variant_edit")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_fetch_url_returns_text_without_browser_navigation(self) -> None:

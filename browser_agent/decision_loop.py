@@ -692,13 +692,13 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
-                speculative_fill = self._speculative_variant_fill_warning(
+                speculative_edit = self._speculative_variant_edit_warning(
                     parsed_action,
                     interpreter_state,
                     tool_result.reasoning_text,
                 )
-                if speculative_fill:
-                    self.last_step_error = speculative_fill
+                if speculative_edit:
+                    self.last_step_error = speculative_edit
                     append_jsonl(
                         self.paths.actions_log,
                         {
@@ -706,7 +706,7 @@ class DecisionLoop:
                             "command": parsed_action.action,
                             "approval_status": "n/a",
                             "execution_result": "skipped",
-                            "reason": "speculative_variant_fill",
+                            "reason": "speculative_variant_edit",
                             "planner_latency_seconds": tool_result.latency_seconds,
                         },
                     )
@@ -1090,36 +1090,28 @@ class DecisionLoop:
             return ""
         return self._failed_url_retry_warning(parsed_action.args[0])
 
-    def _speculative_variant_fill_warning(
+    def _speculative_variant_edit_warning(
         self,
         parsed_action: Any,
         interpreter_state: Any,
         reasoning_text: str,
     ) -> str:
-        if parsed_action.command != "fill" or len(parsed_action.args) < 2:
+        if parsed_action.command not in {"fill", "type"}:
             return ""
         if not _has_unresolved_status(interpreter_state):
-            return ""
-        if not _looks_speculative(reasoning_text):
             return ""
         recent = self.action_history[-6:]
         if _latest_fetch_url_status(recent) != "error":
             return ""
-        fill_value = parsed_action.args[1]
-        current_value = _active_editable_text(
-            getattr(interpreter_state, "dom_evidence", "") or ""
-        )
-        if not current_value:
-            return ""
-        if not _small_variant_edit(current_value, fill_value):
+        if not _looks_speculative(reasoning_text):
             return ""
         return (
-            "Speculative variant fill guard: the page still shows an unresolved "
+            "Speculative variant edit guard: the page still shows an unresolved "
             "requirement and recent evidence lookup failed. Do not try another guessed "
-            "candidate value or swap a short suffix. Gather stronger evidence first: "
-            "use browser lookup in a separate tab, fetch a visible/public text source, "
-            "inspect page evidence, or ask the human only if the value is operator-visible "
-            "and cannot be recovered."
+            "candidate value, swap a suffix, or bulk-insert possible answers. Gather "
+            "stronger evidence first: use browser lookup in a separate tab, fetch a "
+            "visible/public text source, inspect page evidence, or ask the human only "
+            "if the value is operator-visible and cannot be recovered."
         )
 
     def _human_input_allowed(self) -> bool:
@@ -1508,35 +1500,6 @@ def _latest_fetch_url_status(actions: list[str]) -> str:
         if action.startswith("fetch_url error:"):
             return "error"
     return ""
-
-
-def _active_editable_text(dom_evidence: str) -> str:
-    match = re.search(r"active_editable: [^\n]*text='([^']*)'", dom_evidence or "")
-    if not match:
-        return ""
-    return match.group(1)
-
-
-def _small_variant_edit(current_value: str, new_value: str) -> bool:
-    if not current_value or current_value == new_value:
-        return False
-    if new_value.startswith(current_value) and len(new_value) - len(current_value) <= 4:
-        return True
-    prefix_len = _common_prefix_len(current_value, new_value)
-    changed_current = len(current_value) - prefix_len
-    changed_new = len(new_value) - prefix_len
-    return prefix_len >= max(1, min(len(current_value), len(new_value)) - 4) and (
-        changed_current <= 4 or changed_new <= 4
-    )
-
-
-def _common_prefix_len(left: str, right: str) -> int:
-    count = 0
-    for left_char, right_char in zip(left, right):
-        if left_char != right_char:
-            break
-        count += 1
-    return count
 
 
 def _matching_failed_url(
