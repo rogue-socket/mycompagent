@@ -89,6 +89,7 @@ class DecisionLoop:
         self.consecutive_planner_failures = 0
         self.last_action_ok = False
         self.short_text_retries = 0
+        self.interstitial_wait_retries = 0
         self.last_step_error: str | None = None
         self.last_domain: str | None = None
         self._domain_context: str | None = None
@@ -229,6 +230,38 @@ class DecisionLoop:
                         continue
                 else:
                     self.short_text_retries = 0
+
+                interstitial_warning = _transient_interstitial_warning(interpreter_state)
+                if interstitial_warning:
+                    max_waits = int(self.config.get("max_interstitial_waits", 5))
+                    if self.interstitial_wait_retries < max_waits and self.step < int(
+                        self.config.get("max_steps", 50)
+                    ):
+                        self.interstitial_wait_retries += 1
+                        wait_seconds = float(
+                            self.config.get("interstitial_wait_seconds", 2.0)
+                        )
+                        self._log(
+                            "Step "
+                            f"{self.step}: {interstitial_warning}; waiting "
+                            f"{wait_seconds:.1f}s before replanning"
+                        )
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "auto-wait interstitial",
+                                "approval_status": "auto_recovery",
+                                "execution_result": "ok",
+                                "reason": "transient_interstitial",
+                                "wait_seconds": wait_seconds,
+                            },
+                        )
+                        self.action_history.append("auto-wait interstitial")
+                        time.sleep(wait_seconds)
+                        continue
+                else:
+                    self.interstitial_wait_retries = 0
 
                 if detect_no_change(
                     self.last_snapshot_hash,
@@ -1474,6 +1507,33 @@ def _has_unresolved_status(interpreter_state: Any) -> bool:
             "rule",
         )
     )
+
+
+def _transient_interstitial_warning(interpreter_state: Any) -> str:
+    if getattr(interpreter_state, "clickable_elements", []):
+        return ""
+    url = (getattr(interpreter_state, "url", "") or "").lower()
+    if url.startswith("about:"):
+        return ""
+    title = (getattr(interpreter_state, "title", "") or "").lower()
+    visible_text = (getattr(interpreter_state, "visible_text", "") or "").lower()
+    page_summary = (getattr(interpreter_state, "page_summary", "") or "").lower()
+    haystack = f"{title}\n{visible_text[:1200]}\n{page_summary[:600]}"
+    markers = (
+        "just a moment",
+        "checking if the site connection is secure",
+        "checking your browser",
+        "verify you are human",
+        "verifying you are human",
+        "please stand by",
+        "please wait while",
+    )
+    if any(marker in haystack for marker in markers):
+        return (
+            "Transient interstitial/loading page detected. Wait for the page to "
+            "settle instead of repeatedly reloading or spending planner calls."
+        )
+    return ""
 
 
 def _looks_speculative(reasoning_text: str) -> bool:

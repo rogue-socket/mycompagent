@@ -114,6 +114,72 @@ def _snapshot_for_url(url: str, title: str, lines: list[str]) -> str:
     )
 
 
+class TransientInterstitialExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.snapshot_count = 0
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command.startswith("playwright-cli run-code "):
+            return CommandResult(command, 0, "### Result\n[]", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        self.snapshot_count += 1
+        if self.snapshot_count <= 2:
+            return CommandResult(
+                "playwright-cli snapshot",
+                0,
+                _snapshot_for_url(
+                    "https://example.com/task",
+                    "Just a moment...",
+                    ['text "Checking your browser before accessing the site."'],
+                ),
+                "",
+            )
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                ['button "Done" [ref=e1]', 'text "Ready to continue."'],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        if self.snapshot_count <= 2:
+            return "Just a moment...\nChecking your browser before accessing the site."
+        return "Ready to continue."
+
+
+class InterstitialWaitPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        self.testcase.assertNotIn("Just a moment", message)
+        self.testcase.assertIn("Ready to continue", message)
+        return _tool(
+            "finish",
+            {"reason": "Ready page reached."},
+            "The transient interstitial cleared.",
+        )
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 class AriaComboboxPlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
@@ -1095,6 +1161,41 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_transient_interstitial_waits_without_planner_calls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = InterstitialWaitPlanner(self)
+            executor = TransientInterstitialExecutor()
+            loop = DecisionLoop(
+                task="Complete the task once the page is ready.",
+                mode="auto",
+                planner=planner,
+                config={
+                    "max_steps": 5,
+                    "max_errors": 1,
+                    "min_visible_text": 0,
+                    "interstitial_wait_seconds": 0,
+                },
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(len(planner.messages), 1)
+            self.assertNotIn("playwright-cli reload", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "auto-wait interstitial")
+            self.assertEqual(actions[0]["reason"], "transient_interstitial")
+            self.assertEqual(actions[1]["command"], "auto-wait interstitial")
+            self.assertEqual(actions[-1]["command"], "finish")
+
     def test_recent_failed_url_host_retries_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
