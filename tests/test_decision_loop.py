@@ -741,7 +741,24 @@ class HumanInputUnavailablePlanner:
             self.testcase.assertEqual(self.tool_results[-1]["tool_name"], "ask_human")
             self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
             self.testcase.assertIn("stdin is not available", self.tool_results[-1]["error"])
-            self.testcase.assertIn("Human input was requested", message)
+            self.testcase.assertIn("Do not ask the same question again", message)
+            return _tool(
+                "ask_human",
+                {
+                    "question": "What short visual code is shown?",
+                    "reason": "Retry the same missing visual code.",
+                },
+                "Try the same operator question again.",
+            )
+        if step == 3:
+            self.testcase.assertEqual(self.tool_results[-1]["tool_name"], "ask_human")
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            self.testcase.assertIn(
+                "already failed because human input is unavailable",
+                self.tool_results[-1]["error"],
+            )
+            self.testcase.assertIn("Human input target guard", message)
+            self.testcase.assertIn("Do not ask it again", message)
             return _tool(
                 "finish",
                 {"reason": "Unavailable human input was handled without crashing."},
@@ -2819,7 +2836,7 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                 mode="auto",
                 planner=planner,
                 config={
-                    "max_steps": 3,
+                    "max_steps": 4,
                     "max_errors": 1,
                     "min_visible_text": 0,
                     "allow_human_input": True,
@@ -2839,6 +2856,9 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[0]["command"], "ask_human")
             self.assertEqual(actions[0]["execution_result"], "skipped")
             self.assertEqual(actions[0]["approval_status"], "stdin_unavailable")
+            self.assertEqual(actions[1]["command"], "ask_human")
+            self.assertEqual(actions[1]["execution_result"], "skipped")
+            self.assertEqual(actions[1]["reason"], "human_input_unavailable_repeated")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_finish_validation_rejects_higher_price_than_evidence(self) -> None:

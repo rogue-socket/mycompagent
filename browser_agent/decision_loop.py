@@ -104,6 +104,7 @@ class DecisionLoop:
         self.evidence_ledger = EvidenceLedger()
         self.failed_url_attempts: list[FailedUrlAttempt] = []
         self.recent_text_asset_urls: list[str] = []
+        self.unavailable_human_input_questions: set[str] = set()
 
     def run(self) -> RunResult:
         start = time.monotonic()
@@ -500,11 +501,47 @@ class DecisionLoop:
                         except Exception:  # noqa: BLE001
                             pass
                         continue
+                    repeated_human_input_warning = (
+                        self._repeated_unavailable_human_input_warning(question)
+                    )
+                    if repeated_human_input_warning:
+                        self.last_step_error = repeated_human_input_warning
+                        self._log(
+                            f"Step {self.step}: ask_human skipped — "
+                            "same unavailable question already failed"
+                        )
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "ask_human",
+                                "approval_status": "stdin_unavailable",
+                                "execution_result": "skipped",
+                                "reason": "human_input_unavailable_repeated",
+                                "question": question,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("ask_human skipped: " + question)
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {
+                                    "status": "error",
+                                    "error": repeated_human_input_warning,
+                                },
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     if not self._human_input_allowed():
                         error = (
                             "Human input was requested, but it is disabled for this run. "
-                            "Run with --ask-human in auto mode, or use safe/hybrid mode."
+                            "Run with --ask-human in auto mode, use safe/hybrid mode, "
+                            "or continue from page evidence/public lookup without asking "
+                            "the same question again in this run."
                         )
+                        self._record_unavailable_human_question(question)
                         self.last_step_error = error
                         self._log(f"Step {self.step}: ask_human skipped — {error}")
                         append_jsonl(
@@ -535,9 +572,12 @@ class DecisionLoop:
                     except EOFError:
                         error = (
                             "Human input was requested, but stdin is not available. "
-                            "Use available page evidence, public lookup, or run in an "
-                            "interactive terminal for operator-visible values."
+                            "Do not ask the same question again in this run; use "
+                            "available page evidence, public lookup, or finish with a "
+                            "precise blocked reason. Run in an interactive terminal for "
+                            "operator-visible values."
                         )
+                        self._record_unavailable_human_question(question)
                         self.last_step_error = error
                         self._log(f"Step {self.step}: ask_human skipped — {error}")
                         append_jsonl(
@@ -1384,6 +1424,23 @@ class DecisionLoop:
     def _human_input_allowed(self) -> bool:
         return bool(self.config.get("allow_human_input", self.mode != "auto"))
 
+    def _record_unavailable_human_question(self, question: str) -> None:
+        normalized = _normalize_human_input_question(question)
+        if normalized:
+            self.unavailable_human_input_questions.add(normalized)
+
+    def _repeated_unavailable_human_input_warning(self, question: str) -> str:
+        normalized = _normalize_human_input_question(question)
+        if not normalized or normalized not in self.unavailable_human_input_questions:
+            return ""
+        return (
+            "Human input target guard: this exact human-input request already failed "
+            "because human input is unavailable in this run. Do not ask it again. "
+            "Use current page evidence, fetchable public text evidence, browser lookup "
+            "in a separate tab, or finish with a precise blocked reason naming the "
+            "missing operator-visible value."
+        )
+
     def _log(self, message: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         print(f"[BrowserAgent {ts}] {message}", flush=True)
@@ -1912,6 +1969,10 @@ def _status_regression_warning(
         "choose the smallest candidate that satisfies the new requirement while "
         "preserving the regressed statuses."
     )
+
+
+def _normalize_human_input_question(question: str) -> str:
+    return re.sub(r"\s+", " ", (question or "").strip().lower())
 
 
 def _transient_interstitial_warning(interpreter_state: Any) -> str:
