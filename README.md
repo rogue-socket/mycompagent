@@ -164,8 +164,8 @@ Fun variations to try:
   the route, such as math -> art -> music.
 - **No-search mode**: forbid search boxes, browser navigation, and direct URL
   entry; only visible article links are allowed.
-- **Trap avoidance**: choose starts with tempting taxonomy or chronology loops
-  and score the agent on escaping them.
+- **Trap avoidance**: choose starts with tempting local-navigation or chronology
+  loops and score the agent on escaping them.
 - **Route explainback**: after finishing, ask the agent to summarize why each
   clicked article was a reasonable bridge.
 - **Daily puzzle set**: keep a small list of easy, medium, and hard pairs and
@@ -307,34 +307,10 @@ short operator-visible values: the agent asked for the Rule 10 CAPTCHA, accepted
 `4dgf7`, and later used HITL again for the Street View country and chess move.
 It progressed to Rule 18, then got stuck because it treated the input length
 counter as the atomic-number total and repeatedly made arithmetic guesses. That
-is a different class of failure: the agent needs deterministic helper support
-for rule arithmetic and domain solvers, not just more visual extraction.
-
-Follow-up runs `runs/run_20260609T115854Z` and `runs/run_20260609T121936Z`
-validated the first deterministic helper for Rule 18. The planner now has a
-non-CLI `password_game_elements` tool. It scores the current password with the
-Password Game element parser, returns the counted symbols, and can return a
-full `suggested_password` when simple appends are not enough. In the live run,
-the helper repaired:
-
-```text
-WHARFmay149!VIIxVPepsicdcb3🌘Finland2000Bf6+🥚
-```
-
-to:
-
-```text
-whArfmay149!VIIxVPepsicdcb3🌘Finland2000Bf6+🥚H
-```
-
-which scores exactly 200 for Rule 18 while preserving the roman numeral,
-sponsor, chess move, country, moon, and Paul egg spans.
-
-The same rerun exposed the next backlog item. When a fresh CAPTCHA changed the
-digit sum, the planner tried to compensate by changing the confirmed chess move
-from `Bf6+` to `Bf3+`. Password Game runs now explicitly tell the planner to
-preserve confirmed rule-bearing substrings and adjust padding digits or leap-year
-choices instead, but this still needs a full rerun past Rule 18.
+is a different class of failure: the agent needs better state tracking, evidence
+comparison, arithmetic checking, and reversible-edit planning. The current
+direction is to improve those generic reasoning capabilities rather than add
+Password Game-specific tools or domain solvers.
 
 ## 4) Login Flows
 

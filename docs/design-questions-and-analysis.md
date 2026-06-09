@@ -20,11 +20,9 @@ remain.
 > intended seed deduplication, classifying non-retryable planner auth/config
 > failures as configuration errors, grouping article-page links by area, and
 > adding task-focused evidence snippets, planner metrics, same-page anchor guards,
-> Wikipedia redirect/canonical prompt notes, taxonomy route-quality warnings, and
-> lightweight Wikipedia route-helper hints, grounded route logging, Manga
-> bridge-link route optimization coverage, compact Codex planner history,
-> explicit legacy-command registry documentation, structured run results, and
-> reasoning artifact persistence, and memory dedupe regression coverage.
+> redirect/canonical prompt notes, grounded route logging, compact Codex planner
+> history, explicit legacy-command registry documentation, structured run
+> results, reasoning artifact persistence, and memory dedupe regression coverage.
 > Real memory-flow evaluation on 2026-05-27 verified persistence/recall across
 > real Codex-backed browser runs and exposed a planner grounding gap after
 > recalled recovery tips; see `docs/memory-real-flow-evaluation-2026-05-27.md`.
