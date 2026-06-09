@@ -47,6 +47,7 @@ def build_system_instruction(
         "- If 'fill' fails, use click(ref) to focus the input first, then type(text) to enter the text.",
         "- Use 'press' for keyboard keys like Enter, Tab, Escape.",
         "- Use 'format_selection' for rich-text formatting after focusing an editable field and selecting text.",
+        "- If the current editable has rich HTML, avoid plain fill actions that replace the whole value; use targeted typing, selection-based formatting, or another formatting-preserving edit.",
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
         "  autocomplete dropdowns often cover it and cause timeout errors.",
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
@@ -394,7 +395,9 @@ def _current_editable_summary(dom_evidence: str) -> str:
         role = _normalize_status_label(_quoted_dom_field(line, "role"))
         tag = _normalize_status_label(_quoted_dom_field(line, "tag"))
         label = role or tag or "editable"
-        values.append(f"- {label}: {text!r}")
+        html_value = html.unescape(_quoted_dom_field(line, "html"))
+        rich_suffix = " (rich HTML)" if _html_has_rich_markup(html_value) else ""
+        values.append(f"- {label}: {text!r}{rich_suffix}")
     return "\n".join(values[:3])
 
 
@@ -432,6 +435,25 @@ def _quoted_dom_field(line: str, field: str) -> str:
 
 def _normalize_status_label(label: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(label or "")).strip()[:240]
+
+
+def _html_has_rich_markup(html_value: str) -> bool:
+    if not html_value:
+        return False
+    if re.search(
+        r"</?(?:b|strong|i|em|u|s|strike|mark|sub|sup|span)\b",
+        html_value,
+        re.I,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\bstyle\s*=\s*['\"][^'\"]*(?:font-|font-weight|font-style|"
+            r"text-decoration|color|background)",
+            html_value,
+            re.I,
+        )
+    )
 
 
 def _select_clickable_elements(

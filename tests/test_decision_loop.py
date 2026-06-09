@@ -1339,6 +1339,83 @@ class SameValueFillPlanner:
         pass
 
 
+class RichTextFillGuardExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.text = "base"
+        self.html = "<strong>base</strong>"
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command.startswith("playwright-cli run-code "):
+            items = [
+                {
+                    "kind": "active_editable",
+                    "tag": "DIV",
+                    "role": "textbox",
+                    "text": self.text,
+                    "html": self.html,
+                }
+            ]
+            return CommandResult(command, 0, f"### Result\n{json.dumps(items)}", "")
+        if shlex.split(command) == ["playwright-cli", "type", "!"]:
+            self.text = "base!"
+            self.html = "<strong>base</strong>!"
+            return CommandResult(command, 0, "Typed", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [f'textbox "Value" [active] : "{self.text}" [ref=e15]'],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        return f"Task value {self.text}"
+
+
+class RichTextFillGuardPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "base!"},
+                "Append punctuation with a plain fill.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Rich-text fill guard", message)
+            self.testcase.assertIn("formatted HTML", message)
+            return _tool(
+                "type",
+                {"text": "!"},
+                "Append only the missing character in the focused rich-text field.",
+            )
+        if step == 3:
+            return _tool("finish", {"reason": "Rich-text value preserved."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 class UngroundedTypeGuardExecutor:
     def __init__(self) -> None:
         self.current_tab = 1
@@ -2886,6 +2963,39 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[0]["execution_result"], "skipped")
             self.assertEqual(actions[0]["reason"], "fill_value_already_current")
             self.assertEqual(actions[1]["command"], "playwright-cli fill e15 baseX")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_plain_fill_into_rich_text_editable_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = RichTextFillGuardPlanner(self)
+            executor = RichTextFillGuardExecutor()
+            loop = DecisionLoop(
+                task="Make a formatting-preserving edit to the task form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli fill e15 base!", executor.commands)
+            self.assertTrue(
+                any(shlex.split(command) == ["playwright-cli", "type", "!"] for command in executor.commands)
+            )
+            self.assertEqual(executor.html, "<strong>base</strong>!")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "rich_text_plain_fill")
+            self.assertEqual(shlex.split(actions[1]["command"]), ["playwright-cli", "type", "!"])
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_type_without_current_editable_target_is_skipped(self) -> None:

@@ -874,6 +874,29 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                rich_text_plain_fill = _rich_text_plain_fill_warning(
+                    parsed_action,
+                    snapshot_state.elements,
+                    getattr(interpreter_state, "dom_evidence", "") or "",
+                )
+                if rich_text_plain_fill:
+                    self.last_step_error = rich_text_plain_fill
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "rich_text_plain_fill",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 same_value_fill = _same_value_fill_warning(
                     parsed_action,
                     snapshot_state.elements,
@@ -1954,6 +1977,29 @@ def _same_value_fill_warning(
     )
 
 
+def _rich_text_plain_fill_warning(
+    parsed_action: Any,
+    elements: list[Any],
+    dom_evidence: str,
+) -> str:
+    if parsed_action.command != "fill" or not parsed_action.args:
+        return ""
+    target = _element_by_ref(elements, parsed_action.args[0])
+    if target is None or not _element_is_active(target):
+        return ""
+    html_value = _active_editable_html_from_dom_evidence(dom_evidence)
+    text_value = _active_editable_text_from_dom_evidence(dom_evidence)
+    if not text_value or not _html_has_rich_markup(html_value):
+        return ""
+    return (
+        "Rich-text fill guard: the focused editable contains formatted HTML. A "
+        "plain fill would replace the field contents and can erase formatting "
+        "that may already satisfy visible requirements. Preserve the existing "
+        "formatted content with a targeted edit, selection-based formatting, or "
+        "an evidence-backed rich-text operation, then verify status changes."
+    )
+
+
 def _element_is_active(element: Any) -> bool:
     metadata = tuple(str(item).lower() for item in getattr(element, "metadata", ()) or ())
     if "active" in metadata or "focused" in metadata:
@@ -2085,6 +2131,35 @@ def _active_editable_text_from_dom_evidence(dom_evidence: str) -> str | None:
         if text:
             return _normalize_observed_value(text)
     return None
+
+
+def _active_editable_html_from_dom_evidence(dom_evidence: str) -> str:
+    for line in (dom_evidence or "").splitlines():
+        if "active_editable:" not in line:
+            continue
+        html_value = _quoted_dom_field(line, "html")
+        if html_value:
+            return html.unescape(html_value).strip()
+    return ""
+
+
+def _html_has_rich_markup(html_value: str) -> bool:
+    if not html_value:
+        return False
+    if re.search(
+        r"</?(?:b|strong|i|em|u|s|strike|mark|sub|sup|span)\b",
+        html_value,
+        re.I,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\bstyle\s*=\s*['\"][^'\"]*(?:font-|font-weight|font-style|"
+            r"text-decoration|color|background)",
+            html_value,
+            re.I,
+        )
+    )
 
 
 def _quoted_dom_field(line: str, field: str) -> str:

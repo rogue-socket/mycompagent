@@ -189,6 +189,24 @@ class PromptBuilderTests(unittest.TestCase):
             message.index("DOM evidence:"),
         )
 
+    def test_active_editable_summary_marks_rich_html(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/form",
+            title="Form",
+            page_type="form",
+            clickable_elements=[],
+            visible_text="Important value",
+            page_summary="Requirement form.",
+            dom_evidence=(
+                "- active_editable: tag='DIV' role='textbox' "
+                "text='Important value' html='<strong>Important</strong> value'"
+            ),
+        )
+
+        message = build_page_message(state, action_history=[])
+
+        self.assertIn("- textbox: 'Important value' (rich HTML)", message)
+
     def test_non_active_editable_summary_is_included(self) -> None:
         state = InterpreterState(
             url="https://example.com/form",
