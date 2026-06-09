@@ -275,6 +275,31 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("switch back to the tab", message)
         self.assertIn("Do not click random lookup-page refs", message)
 
+    def test_blank_page_ref_recovery_preserves_failed_fill_value(self) -> None:
+        state = InterpreterState(
+            url="about:blank",
+            title="",
+            page_type="unknown",
+            clickable_elements=[],
+            visible_text="",
+            page_summary="No summary available.",
+        )
+
+        message = build_page_message(
+            state,
+            action_history=[
+                "playwright-cli fill e15 alpha",
+                "playwright-cli fill e15 'alpha!'",
+            ],
+            last_error="Error: Ref e15 not found in the current page snapshot. Try capturing new snapshot.",
+            task="Complete the interactive form.",
+        )
+
+        self.assertIn("Blank-page recovery:", message)
+        self.assertIn("Do not start the task over", message)
+        self.assertIn("fresh visible input ref", message)
+        self.assertIn("Intended value: 'alpha!'", message)
+
 
 if __name__ == "__main__":
     unittest.main()

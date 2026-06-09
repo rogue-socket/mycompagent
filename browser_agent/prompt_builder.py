@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shlex
 
 from browser_agent.interpreter import InterpreterState
 
@@ -257,6 +258,13 @@ def build_page_message(
         sections.insert(2, "Variant-loop recovery note:\n" + variant_note)
 
     if last_error:
+        blank_page_note = _blank_page_ref_recovery_note(
+            last_error,
+            state,
+            action_history,
+        )
+        if blank_page_note:
+            sections.append("Blank-page recovery:\n" + blank_page_note)
         tab_recovery_note = _task_tab_recovery_note(
             last_error,
             state,
@@ -706,6 +714,45 @@ def _task_tab_recovery_note(
         "matches the original task, wait for its fresh page state, and only then fill a visible "
         "task-page input ref."
     )
+
+
+def _blank_page_ref_recovery_note(
+    last_error: str,
+    state: InterpreterState,
+    action_history: list[str],
+) -> str:
+    lowered_error = last_error.lower()
+    if "not found in the current page snapshot" not in lowered_error:
+        return ""
+    if not (state.url or "").startswith("about:"):
+        return ""
+
+    ref, value = _last_fill_value(action_history)
+    if not ref or value is None:
+        return (
+            "The browser appears to have reopened on a blank page after a stale ref "
+            "failure. Do not treat this as a fresh task. Restore the last non-blank "
+            "task page from prior page states, wait for fresh refs, then continue from "
+            "the last known task state."
+        )
+    return (
+        "The browser appears to have reopened on a blank page after a stale ref "
+        "failure. Do not start the task over. Restore the last non-blank task page "
+        "from prior page states, wait for fresh refs, then replay the intended full "
+        f"field value from the failed action. The stale ref was {ref}; if refs changed, "
+        f"use the fresh visible input ref. Intended value: {value!r}."
+    )
+
+
+def _last_fill_value(action_history: list[str]) -> tuple[str, str | None]:
+    for action in reversed(action_history):
+        try:
+            parts = shlex.split(action)
+        except ValueError:
+            continue
+        if len(parts) >= 4 and parts[0] == "playwright-cli" and parts[1] == "fill":
+            return parts[2], parts[3]
+    return "", None
 
 
 def _looks_like_not_found_page(state: InterpreterState) -> bool:
