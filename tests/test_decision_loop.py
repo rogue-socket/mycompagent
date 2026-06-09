@@ -1406,6 +1406,80 @@ class FetchUrlPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class RepeatedTruncatedFetchPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/large", "max_chars": "4000"},
+                "Fetch the public source.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
+            self.testcase.assertTrue(self.tool_results[-1]["truncated"])
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/large", "max_chars": "4000"},
+                "Try the same truncated source again.",
+            )
+        if step == 3:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "error")
+            self.testcase.assertIn("Repeated truncated fetch guard", message)
+            self.testcase.assertIn("Increase max_chars", message)
+            return _tool(
+                "finish",
+                {"reason": "Repeated truncated fetch was rejected."},
+                "The guard supplied a better recovery hint.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
+class ExpandedTruncatedFetchPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/large", "max_chars": "4000"},
+                "Fetch the first slice of a public source.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
+            self.testcase.assertTrue(self.tool_results[-1]["truncated"])
+            return _tool(
+                "fetch_url",
+                {"url": "https://data.example/large", "max_chars": "8000"},
+                "Increase max_chars to gather more evidence.",
+            )
+        if step == 3:
+            self.testcase.assertEqual(self.tool_results[-1]["status"], "ok")
+            return _tool(
+                "finish",
+                {"reason": "Expanded truncated fetch was allowed."},
+                "The second fetch used a larger budget.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 class RecentTextAssetNavigationPlanner:
     def __init__(self, testcase: unittest.TestCase) -> None:
         self.testcase = testcase
@@ -2270,6 +2344,99 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(actions[0]["execution_result"], "ok")
             self.assertEqual(actions[0]["content_type"], "image/svg+xml")
             self.assertNotIn("A B C", json.dumps(actions[0]))
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_repeated_same_size_truncated_fetch_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = RepeatedTruncatedFetchPlanner(self)
+            executor = FetchUrlExecutor()
+            fetched: list[tuple[str, int]] = []
+
+            def url_fetcher(url: str, max_chars: int) -> dict:
+                fetched.append((url, max_chars))
+                return {
+                    "status": "ok",
+                    "url": url,
+                    "content_type": "text/plain",
+                    "text": "large text"[:max_chars],
+                    "chars": max_chars,
+                    "truncated": True,
+                }
+
+            loop = DecisionLoop(
+                task="Inspect a public source.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=url_fetcher,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(fetched, [("https://data.example/large", 4000)])
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "ok")
+            self.assertTrue(actions[0]["truncated"])
+            self.assertEqual(actions[1]["execution_result"], "skipped")
+            self.assertEqual(actions[1]["reason"], "repeated_truncated_fetch")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_repeated_truncated_fetch_with_larger_budget_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = ExpandedTruncatedFetchPlanner(self)
+            executor = FetchUrlExecutor()
+            fetched: list[tuple[str, int]] = []
+
+            def url_fetcher(url: str, max_chars: int) -> dict:
+                fetched.append((url, max_chars))
+                return {
+                    "status": "ok",
+                    "url": url,
+                    "content_type": "text/plain",
+                    "text": "large text"[:max_chars],
+                    "chars": max_chars,
+                    "truncated": True,
+                }
+
+            loop = DecisionLoop(
+                task="Inspect a public source.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+                url_fetcher=url_fetcher,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertEqual(
+                fetched,
+                [
+                    ("https://data.example/large", 4000),
+                    ("https://data.example/large", 8000),
+                ],
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "ok")
+            self.assertEqual(actions[1]["execution_result"], "ok")
+            self.assertNotEqual(actions[1].get("reason"), "repeated_truncated_fetch")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_text_asset_goto_on_stateful_page_is_skipped(self) -> None:

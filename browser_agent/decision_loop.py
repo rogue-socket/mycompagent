@@ -50,6 +50,13 @@ class FailedUrlAttempt:
     error: str
 
 
+@dataclass(slots=True)
+class SuccessfulFetchAttempt:
+    url: str
+    max_chars: int
+    truncated: bool
+
+
 class DecisionLoop:
     """Coordinates snapshot, planning, approvals, and execution."""
 
@@ -103,6 +110,7 @@ class DecisionLoop:
         self.task_contract = build_task_contract(task)
         self.evidence_ledger = EvidenceLedger()
         self.failed_url_attempts: list[FailedUrlAttempt] = []
+        self.successful_fetch_attempts: list[SuccessfulFetchAttempt] = []
         self.recent_text_asset_urls: list[str] = []
         self.unavailable_human_input_questions: set[str] = set()
 
@@ -683,6 +691,35 @@ class DecisionLoop:
                             pass
                         continue
                     max_chars = _fetch_max_chars(tool_result.tool_args.get("max_chars"))
+                    repeated_truncated_fetch = self._repeated_truncated_fetch_warning(
+                        url,
+                        max_chars,
+                    )
+                    if repeated_truncated_fetch:
+                        self.last_step_error = repeated_truncated_fetch
+                        self._log(f"Step {self.step}: fetch_url skipped - {url}")
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": "fetch_url",
+                                "approval_status": "n/a",
+                                "execution_result": "skipped",
+                                "reason": "repeated_truncated_fetch",
+                                "url": url,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append("fetch_url skipped: " + url)
+                        self.last_action_ok = False
+                        try:
+                            self.planner.send_tool_result(
+                                tool_result.tool_name,
+                                {"status": "error", "error": repeated_truncated_fetch},
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                        continue
                     fetch_result = self.url_fetcher(url, max_chars)
                     status = str(fetch_result.get("status", "error"))
                     self.last_action_ok = status == "ok"
@@ -692,6 +729,11 @@ class DecisionLoop:
                         self._record_failed_url(url, error)
                     else:
                         self._clear_failed_url_attempts(url)
+                        self._record_successful_fetch(
+                            url,
+                            max_chars,
+                            bool(fetch_result.get("truncated", False)),
+                        )
                     self._log(
                         "Step "
                         f"{self.step}: fetch_url {status} - "
@@ -1392,6 +1434,42 @@ class DecisionLoop:
             for failed in self.failed_url_attempts
             if urlparse(failed.url or "").netloc != parsed.netloc
         ]
+
+    def _record_successful_fetch(
+        self,
+        url: str,
+        max_chars: int,
+        truncated: bool,
+    ) -> None:
+        if not url:
+            return
+        self.successful_fetch_attempts.append(
+            SuccessfulFetchAttempt(
+                url=url,
+                max_chars=max_chars,
+                truncated=truncated,
+            )
+        )
+        self.successful_fetch_attempts = self.successful_fetch_attempts[-40:]
+
+    def _repeated_truncated_fetch_warning(self, url: str, max_chars: int) -> str:
+        normalized = _normalized_url_for_retry(url)
+        if not normalized:
+            return ""
+        for attempt in reversed(self.successful_fetch_attempts):
+            if _normalized_url_for_retry(attempt.url) != normalized:
+                continue
+            if not attempt.truncated or max_chars > attempt.max_chars:
+                return ""
+            return (
+                "Repeated truncated fetch guard: this URL already returned truncated "
+                f"content with max_chars={attempt.max_chars}. Re-fetching the same "
+                "URL with the same or smaller character budget will not add evidence. "
+                "Increase max_chars, choose a narrower/fetchable text source, use a "
+                "browser lookup page in a helper tab, or act on the evidence already "
+                "returned."
+            )
+        return ""
 
     def _record_text_asset_urls(self, dom_evidence: str) -> None:
         for url in _text_asset_urls_from_dom_evidence(dom_evidence):
