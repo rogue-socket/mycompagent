@@ -88,6 +88,7 @@ class DecisionLoop:
         self.snapshot_repeat_count = 0
         self.consecutive_planner_failures = 0
         self.last_action_ok = False
+        self.last_status_indicators: dict[str, str] = {}
         self.short_text_retries = 0
         self.interstitial_wait_retries = 0
         self.last_step_error: str | None = None
@@ -262,6 +263,22 @@ class DecisionLoop:
                         continue
                 else:
                     self.interstitial_wait_retries = 0
+
+                current_status_indicators = _status_indicators_from_dom_evidence(
+                    interpreter_state.dom_evidence
+                )
+                status_regression_warning = _status_regression_warning(
+                    self.last_status_indicators,
+                    current_status_indicators,
+                    self.last_action_ok,
+                )
+                self.last_status_indicators = current_status_indicators
+                if status_regression_warning:
+                    self.last_step_error = (
+                        f"{self.last_step_error}\n\n{status_regression_warning}"
+                        if self.last_step_error
+                        else status_regression_warning
+                    )
 
                 if detect_no_change(
                     self.last_snapshot_hash,
@@ -1554,6 +1571,49 @@ def _has_unresolved_status(interpreter_state: Any) -> bool:
             "requirement",
             "rule",
         )
+    )
+
+
+def _status_indicators_from_dom_evidence(dom_evidence: str) -> dict[str, str]:
+    indicators: dict[str, str] = {}
+    for line in (dom_evidence or "").splitlines():
+        match = re.search(
+            r"\bstatus='(success|error)'.*nearby='([^']+)'",
+            line,
+        )
+        if not match:
+            continue
+        label = _normalize_status_label(match.group(2))
+        if label:
+            indicators[label] = match.group(1)
+    return indicators
+
+
+def _normalize_status_label(label: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(label or "")).strip()[:240]
+
+
+def _status_regression_warning(
+    previous: dict[str, str],
+    current: dict[str, str],
+    last_action_ok: bool,
+) -> str:
+    if not last_action_ok or not previous or not current:
+        return ""
+    regressed = [
+        label
+        for label, previous_status in previous.items()
+        if previous_status == "success" and current.get(label) == "error"
+    ]
+    if not regressed:
+        return ""
+    labels = "; ".join(regressed[:5])
+    return (
+        "Status regression guard: these requirements were previously satisfied but "
+        f"are now failing: {labels}. The last edit likely changed a value that "
+        "another visible status also depends on. Undo or revise the last edit, then "
+        "choose the smallest candidate that satisfies the new requirement while "
+        "preserving the regressed statuses."
     )
 
 

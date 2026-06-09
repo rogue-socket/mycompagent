@@ -1274,6 +1274,126 @@ class EvidenceRecoveredVariantPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class StatusRegressionExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+        self.value = "base"
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n{json.dumps(self._visible_text())}",
+                "",
+            )
+        if command.startswith("playwright-cli run-code "):
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n{json.dumps(self._dom_items())}",
+                "",
+            )
+        if command == "playwright-cli fill e15 baseX":
+            self.value = "baseX"
+            return CommandResult(command, 0, "Filled", "")
+        if command == "playwright-cli fill e15 baseY":
+            self.value = "baseY"
+            return CommandResult(command, 0, "Filled", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [
+                    f'textbox "Value" : "{self.value}" [ref=e15]',
+                    'text "Requirement A has a stable token."',
+                    'text "Requirement B has the new token."',
+                ],
+            ),
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        if self.value == "baseY":
+            return (
+                "Requirement A has a stable token.\n"
+                "Requirement B has the new token.\n"
+                "All requirements accepted."
+            )
+        return "Requirement A has a stable token.\nRequirement B has the new token."
+
+    def _dom_items(self) -> list[dict[str, str]]:
+        if self.value == "baseX":
+            statuses = [
+                ("error", "Requirement A has a stable token."),
+                ("success", "Requirement B has the new token."),
+            ]
+        elif self.value == "baseY":
+            statuses = [
+                ("success", "Requirement A has a stable token."),
+                ("success", "Requirement B has the new token."),
+            ]
+        else:
+            statuses = [
+                ("success", "Requirement A has a stable token."),
+                ("error", "Requirement B has the new token."),
+            ]
+        return [
+            {
+                "kind": "status",
+                "status": status,
+                "nearby": label,
+            }
+            for status, label in statuses
+        ]
+
+
+class StatusRegressionPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseX"},
+                "Add the token that satisfies the currently failing requirement.",
+            )
+        if step == 2:
+            self.testcase.assertIn("Status regression guard", message)
+            self.testcase.assertIn("previously satisfied but are now failing", message)
+            self.testcase.assertIn("Requirement A has a stable token.", message)
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "baseY"},
+                "Revise the value to satisfy the new requirement and preserve prior statuses.",
+            )
+        if step == 3:
+            self.testcase.assertIn("All requirements accepted.", message)
+            return _tool(
+                "finish",
+                {"reason": "All requirements accepted."},
+                "All statuses are successful.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict) -> None:
+        pass
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -1536,6 +1656,37 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             actions = _read_jsonl(paths.actions_log)
             self.assertEqual(actions[2]["execution_result"], "ok")
             self.assertNotEqual(actions[2].get("reason"), "speculative_variant_edit")
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_status_regression_after_successful_action_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = StatusRegressionPlanner(self)
+            executor = StatusRegressionExecutor()
+            loop = DecisionLoop(
+                task="Complete a multi-requirement stateful form.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertIn("playwright-cli fill e15 baseX", executor.commands)
+            self.assertIn("playwright-cli fill e15 baseY", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "playwright-cli fill e15 baseX")
+            self.assertEqual(actions[0]["execution_result"], "ok")
+            self.assertEqual(actions[1]["command"], "playwright-cli fill e15 baseY")
+            self.assertEqual(actions[1]["execution_result"], "ok")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_fetch_url_returns_text_without_browser_navigation(self) -> None:
