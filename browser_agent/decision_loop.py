@@ -103,6 +103,7 @@ class DecisionLoop:
         self.task_contract = build_task_contract(task)
         self.evidence_ledger = EvidenceLedger()
         self.failed_url_attempts: list[FailedUrlAttempt] = []
+        self.recent_text_asset_urls: list[str] = []
 
     def run(self) -> RunResult:
         start = time.monotonic()
@@ -164,6 +165,7 @@ class DecisionLoop:
                     max_visible_chars=int(self.config.get("max_visible_chars", 2000)),
                 )
                 interpreter_dict = interpreter_to_dict(interpreter_state)
+                self._record_text_asset_urls(interpreter_state.dom_evidence)
                 self.evidence_ledger.add_page(
                     step=self.step,
                     url=interpreter_state.url,
@@ -1238,14 +1240,19 @@ class DecisionLoop:
         target_url = parsed_action.args[0]
         if not _looks_like_public_text_asset_url(target_url):
             return ""
-        if not _navigates_away_from_location(interpreter_state.url, target_url):
-            return ""
-        if not self._has_stateful_task_controls(interpreter_state):
+        was_recently_observed = (
+            _normalized_url_for_retry(target_url) in self.recent_text_asset_urls
+        )
+        if not was_recently_observed and not (
+            _navigates_away_from_location(interpreter_state.url, target_url)
+            and self._has_stateful_task_controls(interpreter_state)
+        ):
             return ""
         return (
             "Text-asset navigation guard: the current page has active form/editable "
-            "state, and the target URL looks like a public text-like asset. Do not "
-            "navigate this tab to inspect that asset because it can lose task context. "
+            "state or recently exposed this target URL, and the target URL looks "
+            "like a public text-like asset. Do not navigate a browser tab to inspect "
+            "that asset because it can lose task context or waste a browser step. "
             "Use fetch_url for the asset, or open/switch to a lookup tab before "
             "navigating, then return to the task tab before editing visible controls."
         )
@@ -1282,6 +1289,14 @@ class DecisionLoop:
             for failed in self.failed_url_attempts
             if urlparse(failed.url or "").netloc != parsed.netloc
         ]
+
+    def _record_text_asset_urls(self, dom_evidence: str) -> None:
+        for url in _text_asset_urls_from_dom_evidence(dom_evidence):
+            normalized = _normalized_url_for_retry(url)
+            if normalized in self.recent_text_asset_urls:
+                continue
+            self.recent_text_asset_urls.append(normalized)
+        self.recent_text_asset_urls = self.recent_text_asset_urls[-20:]
 
     def _failed_url_retry_warning(self, url: str) -> str:
         failed = _matching_failed_url(url, self.failed_url_attempts)
@@ -2106,6 +2121,18 @@ def _looks_like_public_text_asset_url(url: str) -> bool:
             ".yml",
         )
     )
+
+
+def _text_asset_urls_from_dom_evidence(dom_evidence: str) -> list[str]:
+    urls: list[str] = []
+    for line in (dom_evidence or "").splitlines():
+        for field in ("src", "href"):
+            url = _quoted_dom_field(line, field)
+            if not _looks_like_public_text_asset_url(url):
+                continue
+            if url not in urls:
+                urls.append(url)
+    return urls
 
 
 def fetch_public_text_url(url: str, max_chars: int = 12000) -> dict[str, Any]:
