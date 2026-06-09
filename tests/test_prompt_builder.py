@@ -165,6 +165,22 @@ class PromptBuilderTests(unittest.TestCase):
             message.index("DOM evidence:"),
         )
 
+    def test_non_active_editable_summary_is_included(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/form",
+            title="Form",
+            page_type="form",
+            clickable_elements=[],
+            visible_text="Draft value",
+            page_summary="Requirement form.",
+            dom_evidence="- editable: tag='TEXTAREA' placeholder='Notes' text='Draft value'",
+        )
+
+        message = build_page_message(state, action_history=[])
+
+        self.assertIn("Current editable values:", message)
+        self.assertIn("- TEXTAREA: 'Draft value'", message)
+
     def test_last_observation_is_included_without_failure_language(self) -> None:
         state = InterpreterState(
             url="https://example.com/form",

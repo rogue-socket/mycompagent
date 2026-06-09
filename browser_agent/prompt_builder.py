@@ -383,7 +383,7 @@ def _current_editable_summary(dom_evidence: str) -> str:
     values: list[str] = []
     seen: set[str] = set()
     for line in (dom_evidence or "").splitlines():
-        if "active_editable:" not in line:
+        if "active_editable:" not in line and "editable:" not in line:
             continue
         text = _normalize_status_label(_quoted_dom_field(line, "text"))
         if not text or text in seen:

@@ -527,7 +527,22 @@ def _get_dom_evidence(executor: PlaywrightExecutor, max_chars: int = 5000) -> st
       html: clip(active.innerHTML || '', 300),
       selection: clip(String(window.getSelection ? window.getSelection() : ''), 240),
     }] : [];
-    return [...activeEditable, ...iframes, ...buttons, ...images, ...links];
+    const activeSeen = active || null;
+    const editables = Array.from(document.querySelectorAll(
+      'input, textarea, [contenteditable="true"], [role="textbox"]'
+    ))
+      .filter((el) => visible(el) && el !== activeSeen)
+      .slice(0, 10)
+      .map((el) => ({
+        kind: 'editable',
+        tag: el.tagName,
+        role: clip(attr(el, 'role')),
+        aria: clip(attr(el, 'aria-label')),
+        placeholder: clip(attr(el, 'placeholder')),
+        text: clip(el.value || textOf(el, 240), 240),
+        html: clip(el.innerHTML || '', 300),
+      }));
+    return [...activeEditable, ...editables, ...iframes, ...buttons, ...images, ...links];
   });
 }"""
     result = executor.run("playwright-cli run-code " + shlex.quote(code))
@@ -591,17 +606,19 @@ def _dom_evidence_priority(item: dict[str, Any]) -> int:
     kind = str(item.get("kind") or "")
     if kind == "active_editable":
         return 0
-    if kind == "iframe":
+    if kind == "editable":
         return 1
-    if _status_indicator(item):
+    if kind == "iframe":
         return 2
-    if kind == "button":
+    if _status_indicator(item):
         return 3
-    if kind == "image":
+    if kind == "button":
         return 4
-    if kind == "link":
+    if kind == "image":
         return 5
-    return 6
+    if kind == "link":
+        return 6
+    return 7
 
 
 def _status_indicator(item: dict[str, Any]) -> str:

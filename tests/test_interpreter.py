@@ -68,6 +68,12 @@ class InterpreterTests(unittest.TestCase):
                         "tag": "DIV",
                         "html": "<strong>abc</strong>",
                     },
+                    {
+                        "kind": "editable",
+                        "tag": "TEXTAREA",
+                        "placeholder": "Notes",
+                        "text": "draft value",
+                    },
                 ]
             ),
             max_clickables=10,
@@ -76,6 +82,8 @@ class InterpreterTests(unittest.TestCase):
         self.assertIn("challenge.png", state.dom_evidence)
         self.assertIn("active_editable", state.dom_evidence)
         self.assertIn("<strong>abc</strong>", state.dom_evidence)
+        self.assertIn("editable", state.dom_evidence)
+        self.assertIn("draft value", state.dom_evidence)
 
     def test_dom_evidence_extracts_generic_status_indicators(self) -> None:
         snapshot = SnapshotState(
