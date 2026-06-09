@@ -684,6 +684,75 @@ class StatefulTaskNavigationGuardPlanner:
         pass
 
 
+class CurrentTabNoopExecutor:
+    def __init__(self) -> None:
+        self.current_tab = 1
+        self.loaded_lookup = False
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command == "playwright-cli goto https://lookup.example/data":
+            self.loaded_lookup = True
+            return CommandResult(command, 0, "Loaded lookup data", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        lines = [
+            "### Open tabs",
+            "- 0: [Task](https://example.com/task)",
+            "- 1: (current) [](about:blank)",
+        ]
+        if self.loaded_lookup:
+            lines[2] = "- 1: (current) [Lookup](https://lookup.example/data)"
+            lines.append('  - text "Lookup loaded"')
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            "\n".join(lines) + "\n",
+            "",
+        )
+
+    def _visible_text(self) -> str:
+        if self.loaded_lookup:
+            return "Lookup loaded"
+        return ""
+
+
+class CurrentTabNoopPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "tab_select",
+                {"index": "1"},
+                "Mistakenly re-select the already current lookup tab.",
+            )
+        if step == 2:
+            self.testcase.assertIn("already the current tab", message)
+            self.testcase.assertIn("Selecting it again does not change page state", message)
+            return _tool(
+                "goto",
+                {"url": "https://lookup.example/data"},
+                "Use a state-changing lookup action.",
+            )
+        if step == 3:
+            return _tool("finish", {"reason": "Lookup tab loaded."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        pass
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -696,6 +765,35 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_selecting_current_tab_is_skipped_with_recovery_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = CurrentTabNoopPlanner(self)
+            executor = CurrentTabNoopExecutor()
+            loop = DecisionLoop(
+                task="Use the lookup tab.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli tab-select 1", executor.commands)
+            self.assertIn("playwright-cli goto https://lookup.example/data", executor.commands)
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["execution_result"], "skipped")
+            self.assertEqual(actions[0]["reason"], "tab_already_current")
+            self.assertEqual(actions[-1]["command"], "finish")
+
     def test_stateful_task_tab_rejects_lookup_goto_away_from_task_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

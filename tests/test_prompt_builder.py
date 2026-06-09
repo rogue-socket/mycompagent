@@ -22,6 +22,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Reserve ask_human", message)
         self.assertIn("A new tab opens blank", message)
         self.assertIn("Stay there until you have loaded and extracted", message)
+        self.assertIn("already marked current", message)
+        self.assertIn("it is a no-op", message)
         self.assertIn("active form/editable state", message)
         self.assertIn("do not use goto on that tab", message)
         self.assertIn("same-site asset or detail URLs", message)

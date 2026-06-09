@@ -524,6 +524,27 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                current_tab_noop = _current_tab_selection_noop(
+                    parsed_action,
+                    snapshot_state.raw_text,
+                )
+                if current_tab_noop:
+                    self.last_step_error = current_tab_noop
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "tab_already_current",
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 risky_navigation = self._stateful_task_tab_navigation_warning(
                     parsed_action,
                     interpreter_state,
@@ -1216,6 +1237,28 @@ def _prefer_last_matching_dom_node(element: Any | None) -> bool:
     description = (getattr(element, "description", "") or "").strip().lower()
     child_text = (getattr(element, "child_text", "") or "").strip()
     return bool(child_text) and description in {"generic", "generic [cursor=pointer]"}
+
+
+def _current_tab_selection_noop(parsed_action: Any, snapshot_text: str) -> str:
+    if parsed_action.command != "tab-select" or not parsed_action.args:
+        return ""
+    current_index = _current_tab_index(snapshot_text)
+    if current_index is None or str(current_index) != str(parsed_action.args[0]):
+        return ""
+    return (
+        f"Tab {current_index} is already the current tab. Selecting it again does not "
+        "change page state. Choose a state-changing action instead: load the needed "
+        "lookup URL in this tab with goto, switch to a different useful tab, or return "
+        "to the task tab only when ready to edit visible task controls."
+    )
+
+
+def _current_tab_index(snapshot_text: str) -> int | None:
+    for line in (snapshot_text or "").splitlines():
+        match = re.search(r"^\s*-\s*(\d+):\s*\(current\)", line)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def _same_location(current_url: str, expected_url: str) -> bool:
