@@ -524,6 +524,62 @@ class CaptchaPlanner:
         self.tool_results.append({"tool_name": tool_name, **result})
 
 
+class PasswordElementsExecutor:
+    def __init__(self) -> None:
+        self.commands: list[str] = []
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, "### Result\n\"Rule 18 active\"", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _workflow_snapshot(
+                [
+                    'textbox "Please choose a password" : "Aaaaa37!maypepsiV-VII4dgf7wharfHe🌘KenyaNf4+🥚" [ref=e15]',
+                    "text \"Rule 18\"",
+                    'text "The elements in your password must have atomic numbers that add up to 200."',
+                ]
+            ),
+            "",
+        )
+
+
+class PasswordElementsPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+        self.tool_results: list[dict[str, object]] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        password = "Aaaaa37!maypepsiV-VII4dgf7wharfHe🌘KenyaNf4+🥚"
+        if step == 1:
+            return _tool(
+                "password_game_elements",
+                {"password": password},
+                "Compute the Rule 18 element sum before editing.",
+            )
+        if step == 2:
+            self.testcase.assertEqual(
+                self.tool_results[-1]["tool_name"], "password_game_elements"
+            )
+            self.testcase.assertEqual(self.tool_results[-1]["current_sum"], 180)
+            self.testcase.assertEqual(self.tool_results[-1]["suggested_suffix"], "HK")
+            return _tool("finish", {"reason": "Helper returned HK."}, "Done.")
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, object]) -> None:
+        self.tool_results.append({"tool_name": tool_name, **result})
+
+
 def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResult:
     return ToolCallResult(
         tool_name=tool_name,
@@ -833,6 +889,34 @@ class DecisionLoopMetadataTests(unittest.TestCase):
                 shlex.split(actions[1]["command"]),
                 ["playwright-cli", "fill", "e15", "Aaaaa!799juneVIIpepsiABCD"],
             )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_password_game_elements_returns_planner_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = PasswordElementsPlanner(self)
+            executor = PasswordElementsExecutor()
+            loop = DecisionLoop(
+                task="Use the Password Game element helper.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 3, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="http://127.0.0.1:8766/password-game.html",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            actions = _read_jsonl(paths.actions_log)
+            self.assertEqual(actions[0]["command"], "password_game_elements")
+            self.assertEqual(actions[0]["current_sum"], 180)
+            self.assertEqual(actions[0]["suggested_suffix"], "HK")
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_finish_validation_rejects_higher_price_than_evidence(self) -> None:

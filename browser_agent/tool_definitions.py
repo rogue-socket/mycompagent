@@ -232,6 +232,27 @@ _TOOLS: list[types.FunctionDeclaration] = [
             required=["question"],
         ),
     ),
+    types.FunctionDeclaration(
+        name="password_game_elements",
+        description=(
+            "Compute Neal.fun Password Game Rule 18 element sums and suggest an "
+            "edit. Use this before changing a password for the atomic-number rule."
+        ),
+        parameters=types.Schema(
+            type="OBJECT",
+            properties={
+                "password": types.Schema(
+                    type="STRING",
+                    description="Current visible password text.",
+                ),
+                "target": types.Schema(
+                    type="STRING",
+                    description="Target atomic-number sum, default 200.",
+                ),
+            },
+            required=["password"],
+        ),
+    ),
     # -- Tabs --
     types.FunctionDeclaration(
         name="tab_list",
@@ -338,7 +359,7 @@ def tool_call_to_cli(name: str, args: dict[str, str]) -> str | None:
 
     Returns ``None`` for non-CLI tools.
     """
-    if name in {"finish", "ask_human"}:
+    if name in {"finish", "ask_human", "password_game_elements"}:
         return None
     if name == "draw_circle":
         return _draw_circle_command(args)

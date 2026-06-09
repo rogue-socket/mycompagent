@@ -59,6 +59,7 @@ Allowed tool names and arguments:
 - tab_close/tab_select: {"index": "0"}
 - state_save/state_load: {"path": "auth.json"}
 - ask_human: {"question": "short specific question", "reason": "why this is needed"}
+- password_game_elements: {"password": "current visible password", "target": "200"}
 - finish: {"reason": "what was completed"}
 
 Rules:
@@ -67,6 +68,9 @@ Rules:
 - Do not choose snapshot unless the user explicitly asked for an extra snapshot; every step already includes fresh page state.
 - Use ask_human when a short missing value visible to the operator is needed to continue, such as CAPTCHA text.
 - Use draw_circle when a game asks for drawing a freehand circle on a canvas-like surface.
+- Use password_game_elements before editing Password Game Rule 18; do not infer the atomic sum from the input length counter.
+- If password_game_elements returns suggested_password, fill the password input with suggested_password exactly.
+- In Password Game runs, preserve confirmed rule-bearing substrings such as CAPTCHA text, Wordle answers, chess moves, country names, sponsor names, roman numerals, the moon emoji, and Paul's egg. When adjusting digit sums, edit padding digits or leap-year choices instead of changing those substrings.
 - Choose one action that advances the browser task."""
 
 
