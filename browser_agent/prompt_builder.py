@@ -416,7 +416,7 @@ def _status_indicators_from_dom_evidence(dom_evidence: str) -> list[tuple[str, s
 
 def _quoted_dom_field(line: str, field: str) -> str:
     match = re.search(
-        rf"\b{re.escape(field)}=('(?:[^'\\]|\\.)*')",
+        rf"\b{re.escape(field)}=('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")",
         line or "",
     )
     if not match:

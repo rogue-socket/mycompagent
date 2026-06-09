@@ -9,6 +9,7 @@ from browser_agent.decision_loop import (
     RunResult,
     _html_to_readable_text,
     _looks_html_text,
+    _status_indicators_from_dom_evidence,
 )
 from browser_agent.logger import RunPaths, append_jsonl
 from browser_agent.memory import Lesson, MemoryStore
@@ -1606,6 +1607,14 @@ def _tool(tool_name: str, args: dict[str, str], reasoning: str) -> ToolCallResul
 
 
 class DecisionLoopMetadataTests(unittest.TestCase):
+    def test_status_indicator_parser_handles_double_quoted_dom_fields(self) -> None:
+        statuses = _status_indicators_from_dom_evidence(
+            "- status_indicator: status='success' "
+            "nearby=\"Requirement C's value is valid.\""
+        )
+
+        self.assertEqual(statuses, {"Requirement C's value is valid.": "success"})
+
     def test_transient_interstitial_waits_without_planner_calls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

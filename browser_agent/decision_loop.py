@@ -1751,7 +1751,7 @@ def _active_editable_text_from_dom_evidence(dom_evidence: str) -> str | None:
 
 def _quoted_dom_field(line: str, field: str) -> str:
     match = re.search(
-        rf"\b{re.escape(field)}=('(?:[^'\\]|\\.)*')",
+        rf"\b{re.escape(field)}=('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")",
         line or "",
     )
     if not match:

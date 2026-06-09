@@ -142,6 +142,24 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Satisfied:\n- Requirement A is valid.", message)
         self.assertLess(message.index("Failing:"), message.index("Satisfied:"))
 
+    def test_status_summary_handles_double_quoted_dom_fields(self) -> None:
+        state = InterpreterState(
+            url="https://example.com/form",
+            title="Form",
+            page_type="form",
+            clickable_elements=[],
+            visible_text="Requirement C.",
+            page_summary="Requirement form.",
+            dom_evidence=(
+                "- status_indicator: status='success' "
+                "nearby=\"Requirement C's value is valid.\""
+            ),
+        )
+
+        message = build_page_message(state, action_history=[])
+
+        self.assertIn("Satisfied:\n- Requirement C's value is valid.", message)
+
     def test_active_editable_summary_is_included_before_dom_evidence(self) -> None:
         state = InterpreterState(
             url="https://example.com/form",
