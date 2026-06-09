@@ -843,6 +843,24 @@ class DecisionLoop:
                     continue
 
                 if detect_repeated_action(self.action_history, parsed_action.action):
+                    repeated_deletion_warning = _repeated_deletion_warning(parsed_action)
+                    if repeated_deletion_warning:
+                        self.last_step_error = repeated_deletion_warning
+                        append_jsonl(
+                            self.paths.actions_log,
+                            {
+                                "step": self.step,
+                                "command": parsed_action.action,
+                                "approval_status": "n/a",
+                                "execution_result": "skipped",
+                                "reason": "repeated_deletion",
+                                "current_url": interpreter_state.url,
+                                "planner_latency_seconds": tool_result.latency_seconds,
+                            },
+                        )
+                        self.action_history.append(parsed_action.action)
+                        self.last_action_ok = False
+                        continue
                     self.stop_reason = "repeated_action"
                     break
 
@@ -2124,8 +2142,25 @@ def _rich_text_plain_fill_warning(
         "Rich-text fill guard: the focused editable contains formatted HTML. A "
         "plain fill would replace the field contents and can erase formatting "
         "that may already satisfy visible requirements. Preserve the existing "
-        "formatted content with a targeted edit, selection-based formatting, or "
-        "an evidence-backed rich-text operation, then verify status changes."
+        "formatted content with a targeted edit. If you need to replace or "
+        "remove an existing substring, first use select_text with the exact "
+        "focused-editable substring, then type the replacement text. Avoid "
+        "repeated Backspace/Delete for multi-character rewrites; then verify "
+        "status changes."
+    )
+
+
+def _repeated_deletion_warning(parsed_action: Any) -> str:
+    if parsed_action.command != "press" or not parsed_action.args:
+        return ""
+    key = str(parsed_action.args[0]).lower()
+    if key not in {"backspace", "delete"}:
+        return ""
+    return (
+        "Repeated deletion guard: repeated Backspace/Delete is a slow and fragile "
+        "way to rewrite existing content. Use select_text with the exact substring "
+        "that needs replacement, then type the replacement text and verify the "
+        "visible status indicators."
     )
 
 

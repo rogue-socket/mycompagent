@@ -17,6 +17,7 @@ from browser_agent.decision_loop import (
     _looks_json_text,
     _looks_svg_text,
     _protected_fragment_fill_warning,
+    _repeated_deletion_warning,
     _status_indicators_from_dom_evidence,
     _svg_to_readable_text,
 )
@@ -146,6 +147,17 @@ class ProtectedFragmentGuardTests(unittest.TestCase):
         )
 
         self.assertEqual(warning, "")
+
+
+class RepeatedDeletionGuardTests(unittest.TestCase):
+    def test_repeated_deletion_warning_prefers_exact_selection(self) -> None:
+        action = parse_tool_call("press", {"key": "Backspace"})
+
+        warning = _repeated_deletion_warning(action)
+
+        self.assertIn("Repeated deletion guard", warning)
+        self.assertIn("select_text", warning)
+        self.assertIn("exact substring", warning)
 
 
 class AriaComboboxExecutor:
@@ -1525,6 +1537,9 @@ class RichTextFillGuardPlanner:
         if step == 2:
             self.testcase.assertIn("Rich-text fill guard", message)
             self.testcase.assertIn("formatted HTML", message)
+            self.testcase.assertIn("select_text", message)
+            self.testcase.assertIn("exact", message)
+            self.testcase.assertIn("Avoid repeated Backspace/Delete", message)
             return _tool(
                 "type",
                 {"text": "!"},
