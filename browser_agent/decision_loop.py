@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from difflib import SequenceMatcher
 import html
 import json
 import re
@@ -970,6 +971,14 @@ class DecisionLoop:
                     getattr(interpreter_state, "dom_evidence", "") or "",
                 )
                 if rich_text_plain_fill:
+                    if self._recover_rich_text_fill_via_selection(
+                        parsed_action,
+                        snapshot_state.elements,
+                        getattr(interpreter_state, "dom_evidence", "") or "",
+                        tool_result,
+                        interpreter_state.url or "",
+                    ):
+                        continue
                     self.last_step_error = rich_text_plain_fill
                     append_jsonl(
                         self.paths.actions_log,
@@ -1434,6 +1443,171 @@ class DecisionLoop:
             self._log(f"Run stopped | reason={self.stop_reason} steps={self.step}")
 
         return self._run_result()
+
+    def _recover_rich_text_fill_via_selection(
+        self,
+        parsed_action: Any,
+        elements: list[Any],
+        dom_evidence: str,
+        tool_result,
+        current_url: str,
+    ) -> bool:
+        if parsed_action.command != "fill" or len(parsed_action.args) < 2:
+            return False
+
+        target = _element_by_ref(elements, parsed_action.args[0])
+        if target is None or not _element_is_active(target):
+            return False
+
+        current_value = _editable_value_from_element(target)
+        if current_value is None and _element_is_active(target):
+            current_value = _active_editable_text_from_dom_evidence(dom_evidence)
+        if not current_value:
+            return False
+
+        intended_value = _normalize_observed_value(str(parsed_action.args[1]))
+        replacement_plan = _infer_rich_text_substring_rewrite(
+            current_value,
+            intended_value,
+        )
+        if replacement_plan is None:
+            return False
+
+        plan_kind, old_value, new_value, insert_offset = replacement_plan
+        self._log(
+            "Step "
+            f"{self.step}: rich-text plain fill recovery ({plan_kind}): "
+            f"{old_value!r} -> {new_value!r} without full value overwrite."
+        )
+        self.action_history.append(parsed_action.action)
+
+        try:
+            actions: list[str] = []
+            if plan_kind == "replace":
+                if current_value.count(old_value) != 1:
+                    return False
+                select_action = parse_tool_call(
+                    "select_text",
+                    {"text": old_value, "occurrence": "1"},
+                )
+                type_action = parse_tool_call("type", {"text": new_value})
+                actions = [select_action.action, type_action.action]
+            elif plan_kind in {"append", "prepend"}:
+                cursor_offset = len(current_value) if plan_kind == "append" else 0
+                type_action = parse_tool_call("type", {"text": new_value})
+                actions = self._cursor_move_to_offset(
+                    current_value=current_value,
+                    target_offset=cursor_offset,
+                ) + [type_action.action]
+            elif plan_kind == "insert":
+                type_action = parse_tool_call("type", {"text": new_value})
+                actions = self._cursor_move_to_offset(
+                    current_value=current_value,
+                    target_offset=insert_offset,
+                ) + [type_action.action]
+            elif plan_kind == "delete":
+                if not old_value or current_value.count(old_value) != 1:
+                    return False
+                select_action = parse_tool_call(
+                    "select_text",
+                    {"text": old_value, "occurrence": "1"},
+                )
+                delete_action = parse_tool_call("press", {"key": "Delete"})
+                actions = [select_action.action, delete_action.action]
+            else:
+                return False
+        except ActionParseError:
+            return False
+
+        last_action = actions[-1] if actions else ""
+        last_result: Any | None = None
+        for action in actions:
+            action_exec = self.executor.run(action)
+            append_jsonl(
+                self.paths.actions_log,
+                {
+                    "step": self.step,
+                    "command": action,
+                    "approval_status": "auto_recovery",
+                    "execution_result": "ok" if action_exec.returncode == 0 else "error",
+                    "current_url": current_url,
+                    "planner_latency_seconds": tool_result.latency_seconds,
+                },
+            )
+            self.action_history.append(action)
+            if action_exec.returncode != 0:
+                self.last_action_ok = False
+                self.last_step_error = (
+                    f"Rich-text recovery action failed: {action_exec.stderr or 'command failed'}"
+                )
+                return False
+            if action == last_action:
+                last_result = action_exec
+
+        if last_result is None:
+            self.last_action_ok = False
+            return False
+        self.last_action_ok = last_result.returncode == 0
+        recovery_log = {
+            "step": self.step,
+            "command": parsed_action.action,
+            "approval_status": "auto_recovery",
+            "execution_result": "ok",
+            "current_url": current_url,
+            "planner_latency_seconds": tool_result.latency_seconds,
+            "recovery": "rich_text_fill_substring_replacement",
+        }
+        if last_action.startswith("playwright-cli type"):
+            recovery_log["stdout"] = last_result.stdout
+            recovery_log["stderr"] = last_result.stderr
+
+        append_jsonl(
+            self.paths.actions_log,
+            recovery_log,
+        )
+        try:
+            if plan_kind == "replace":
+                output = f"replaced {old_value!r} with {new_value!r}"
+            elif plan_kind == "append":
+                output = f"appended {new_value!r} at end"
+            elif plan_kind == "insert":
+                output = f"inserted {new_value!r} at position {insert_offset}"
+            else:
+                output = f"prepended {new_value!r} at start"
+            if plan_kind == "delete":
+                output = f"deleted {old_value!r}"
+            self.planner.send_tool_result(
+                parsed_action.tool_name,
+                {"status": "ok", "output": output},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        return True
+
+    def _cursor_move_to_offset(
+        self,
+        current_value: str,
+        target_offset: int,
+    ) -> list[str]:
+        target_offset = max(0, min(len(current_value), target_offset))
+        actions: list[str] = []
+        if target_offset == 0:
+            actions.append("playwright-cli press Home")
+            return actions
+        if target_offset == len(current_value):
+            actions.append("playwright-cli press End")
+            return actions
+
+        steps_from_start = target_offset
+        steps_from_end = max(0, len(current_value) - target_offset)
+        if steps_from_start <= steps_from_end:
+            actions.append("playwright-cli press Home")
+            actions.extend(["playwright-cli press ArrowRight"] * steps_from_start)
+        else:
+            actions.append("playwright-cli press End")
+            actions.extend(["playwright-cli press ArrowLeft"] * steps_from_end)
+        return actions
 
     def _open_browser(self) -> None:
         open_command = "playwright-cli open"
@@ -2211,6 +2385,50 @@ def _rich_text_plain_fill_warning(
         "repeated Backspace/Delete for multi-character rewrites; then verify "
         "status changes."
     )
+
+
+def _infer_rich_text_substring_rewrite(
+    current_value: str,
+    intended_value: str,
+) -> tuple[str, str, str, int] | None:
+    if not current_value or not intended_value:
+        return None
+    if current_value == intended_value:
+        return None
+
+    matcher = SequenceMatcher(None, current_value, intended_value)
+    edits = [op for op in matcher.get_opcodes() if op[0] != "equal"]
+    if not edits:
+        return None
+    if len(edits) != 1:
+        return None
+
+    tag, c_start, c_end, t_start, t_end = edits[0]
+    if tag == "insert":
+        inserted = intended_value[t_start:t_end]
+        if not inserted:
+            return None
+        if t_start == 0:
+            return "prepend", "", inserted, 0
+        if t_end == len(intended_value):
+            return "append", "", inserted, len(current_value)
+        return "insert", "", inserted, t_start
+    if tag == "delete":
+        deleted = current_value[c_start:c_end]
+        if not deleted:
+            return None
+        if c_start == 0 and c_end == len(current_value):
+            return "delete", deleted, "", 0
+        return "delete", deleted, "", c_start
+    if tag == "replace":
+        old_value = current_value[c_start:c_end]
+        new_value = intended_value[t_start:t_end]
+        if not old_value or not new_value:
+            return None
+        if old_value == new_value:
+            return None
+        return "replace", old_value, new_value, c_start
+    return None
 
 
 def _repeated_deletion_warning(parsed_action: Any) -> str:

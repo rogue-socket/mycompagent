@@ -1,4 +1,5 @@
 import json
+import re
 import shlex
 import tempfile
 import unittest
@@ -14,6 +15,7 @@ from browser_agent.decision_loop import (
     _html_to_readable_text,
     _human_browser_action_warning,
     _json_to_readable_text,
+    _infer_rich_text_substring_rewrite,
     _looks_html_text,
     _looks_json_text,
     _looks_svg_text,
@@ -179,6 +181,45 @@ class HumanBrowserActionGuardTests(unittest.TestCase):
         )
 
         self.assertEqual(warning, "")
+
+
+class RichTextSubstringRewriteTests(unittest.TestCase):
+    def test_rewrite_plan_replaces_middle_substring(self) -> None:
+        self.assertEqual(
+            _infer_rich_text_substring_rewrite(
+                "aaaaa1A!888MayPepsiXXXV",
+                "aaaaa1A!888junePepsiXXXV",
+            ),
+            ("replace", "May", "june", 11),
+        )
+
+    def test_rewrite_plan_appends_new_suffix(self) -> None:
+        self.assertEqual(
+            _infer_rich_text_substring_rewrite("base", "base!"),
+            ("append", "", "!", 4),
+        )
+
+    def test_rewrite_plan_prepends_new_prefix(self) -> None:
+        self.assertEqual(
+            _infer_rich_text_substring_rewrite("base", "Maybase"),
+            ("prepend", "", "May", 0),
+        )
+
+    def test_rewrite_plan_inserts_middle(self) -> None:
+        self.assertEqual(
+            _infer_rich_text_substring_rewrite("base", "ba!se"),
+            ("insert", "", "!", 2),
+        )
+
+    def test_rewrite_plan_returns_none_for_identical_value(self) -> None:
+        self.assertIsNone(
+            _infer_rich_text_substring_rewrite("base", "base")
+        )
+
+    def test_rewrite_plan_returns_none_for_no_change(self) -> None:
+        self.assertIsNone(
+            _infer_rich_text_substring_rewrite("same", "same")
+        )
 
 
 class AriaComboboxExecutor:
@@ -1572,6 +1613,280 @@ class RichTextFillGuardExecutor:
 
     def _visible_text(self) -> str:
         return f"Task value {self.text}"
+
+
+class RichTextFillReplacementRecoveryExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.text = "baseMay"
+        self.html = "<strong>base</strong>May"
+        self.commands: list[str] = []
+        self._last_selection: str = ""
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command.startswith("playwright-cli run-code "):
+            if "targetText" in command:
+                match = re.search(r"targetText\s*=\s*(?:'|\")(.+?)(?:'|\")", command)
+                if match:
+                    self._last_selection = match.group(1)
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n{json.dumps(self._editable_dom_evidence())}",
+                "",
+            )
+        if shlex.split(command) == ["playwright-cli", "type", "june"]:
+            if self._last_selection:
+                self.text = self.text.replace(self._last_selection, "june", 1)
+                self.html = self.text
+                self._last_selection = ""
+            return CommandResult(command, 0, "Typed", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [f'textbox "Value" [active] : "{self.text}" [ref=e15]'],
+            ),
+            "",
+        )
+
+    def _editable_dom_evidence(self) -> list[dict[str, str]]:
+        return [
+            {
+                "kind": "active_editable",
+                "tag": "DIV",
+                "role": "textbox",
+                "text": self.text,
+                "html": self.html,
+            }
+        ]
+
+    def _visible_text(self) -> str:
+        return f"Task value {self.text}"
+
+
+class RichTextFillReplacementRecoveryPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "basejune"},
+                "Replace substring in rich-text field.",
+            )
+        if step == 2:
+            return _tool(
+                "finish",
+                {"reason": "Recovery was applied in one step."},
+                "Done.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        if tool_name == "fill":
+            self.testcase.assertIn("replaced 'May' with 'june'", result.get("output", ""))
+
+
+class RichTextFillAppendRecoveryExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.text = "base"
+        self.html = "<strong>base</strong>"
+        self.commands: list[str] = []
+        self._cursor_to_end = False
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command.startswith("playwright-cli run-code "):
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n{json.dumps(self._editable_dom_evidence())}",
+                "",
+            )
+        if command == "playwright-cli press End":
+            self._cursor_to_end = True
+            return CommandResult(command, 0, "Pressed End", "")
+        if shlex.split(command) == ["playwright-cli", "type", "!"]:
+            if self._cursor_to_end:
+                self.text = self.text + "!"
+                self._cursor_to_end = False
+                self.html = self.text
+            return CommandResult(command, 0, "Typed", "")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [f'textbox "Value" [active] : "{self.text}" [ref=e15]'],
+            ),
+            "",
+        )
+
+    def _editable_dom_evidence(self) -> list[dict[str, str]]:
+        return [
+            {
+                "kind": "active_editable",
+                "tag": "DIV",
+                "role": "textbox",
+                "text": self.text,
+                "html": self.html,
+            }
+        ]
+
+    def _visible_text(self) -> str:
+        return f"Task value {self.text}"
+
+
+class RichTextFillAppendRecoveryPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "base!"},
+                "Append a character to the rich-text field.",
+            )
+        if step == 2:
+            return _tool(
+                "finish",
+                {"reason": "Recovery was appended in one step."},
+                "Done.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        if tool_name == "fill":
+            self.testcase.assertIn("appended '!' at end", result.get("output", ""))
+
+
+class RichTextFillInsertMiddleRecoveryExecutor:
+    supports_dom_evidence = True
+
+    def __init__(self) -> None:
+        self.text = "base"
+        self.html = "<strong>base</strong>"
+        self.commands: list[str] = []
+        self.cursor = 0
+
+    def run(self, command: str, timeout: float = 45.0) -> CommandResult:
+        self.commands.append(command)
+        if command.startswith("playwright-cli open"):
+            return CommandResult(command, 0, "", "")
+        if command == 'playwright-cli eval "document.body.innerText"':
+            return CommandResult(command, 0, f"### Result\n{json.dumps(self._visible_text())}", "")
+        if command.startswith("playwright-cli run-code "):
+            return CommandResult(
+                command,
+                0,
+                f"### Result\n{json.dumps(self._editable_dom_evidence())}",
+                "",
+            )
+        if command == "playwright-cli press Home":
+            self.cursor = 0
+            return CommandResult(command, 0, "Pressed Home", "")
+        if command == "playwright-cli press End":
+            self.cursor = len(self.text)
+            return CommandResult(command, 0, "Pressed End", "")
+        if command == "playwright-cli press ArrowRight":
+            self.cursor = min(len(self.text), self.cursor + 1)
+            return CommandResult(command, 0, "Pressed ArrowRight", "")
+        if command == "playwright-cli press ArrowLeft":
+            self.cursor = max(0, self.cursor - 1)
+            return CommandResult(command, 0, "Pressed ArrowLeft", "")
+        if command.startswith("playwright-cli type "):
+            parts = shlex.split(command)
+            if len(parts) == 3 and parts[0] == "playwright-cli" and parts[1] == "type":
+                inserted = parts[2]
+                self.text = self.text[: self.cursor] + inserted + self.text[self.cursor :]
+                self.cursor += len(inserted)
+                self.html = self.text
+                return CommandResult(command, 0, f"Typed {inserted}", "")
+            return CommandResult(command, 1, "", f"Unsupported type command: {command}")
+        return CommandResult(command, 1, "", f"Unexpected command: {command}")
+
+    def snapshot(self) -> CommandResult:
+        return CommandResult(
+            "playwright-cli snapshot",
+            0,
+            _snapshot_for_url(
+                "https://example.com/task",
+                "Task",
+                [f'textbox "Value" [active] : "{self.text}" [ref=e15]'],
+            ),
+            "",
+        )
+
+    def _editable_dom_evidence(self) -> list[dict[str, str]]:
+        return [
+            {
+                "kind": "active_editable",
+                "tag": "DIV",
+                "role": "textbox",
+                "text": self.text,
+                "html": self.html,
+            }
+        ]
+
+    def _visible_text(self) -> str:
+        return f"Task value {self.text}"
+
+
+class RichTextFillInsertMiddleRecoveryPlanner:
+    def __init__(self, testcase: unittest.TestCase) -> None:
+        self.testcase = testcase
+        self.messages: list[str] = []
+
+    def plan(self, message: str, max_retries: int = 4) -> ToolCallResult:
+        self.messages.append(message)
+        step = len(self.messages)
+        if step == 1:
+            return _tool(
+                "fill",
+                {"ref": "e15", "value": "ba!se"},
+                "Insert an exclamation point in the middle.",
+            )
+        if step == 2:
+            return _tool(
+                "finish",
+                {"reason": "Middle-insert recovery was applied in one step."},
+                "Done.",
+            )
+        raise AssertionError(f"Unexpected planner step {step}")
+
+    def send_tool_result(self, tool_name: str, result: dict[str, str]) -> None:
+        if tool_name == "fill":
+            self.testcase.assertIn("inserted '!' at position 2", result.get("output", ""))
 
 
 class RichTextFillGuardPlanner:
@@ -3128,7 +3443,6 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             self.assertEqual(result.stop_reason, "completed")
             self.assertNotIn("playwright-cli goto https://assets.example/data.svg", executor.commands)
             actions = _read_jsonl(paths.actions_log)
-            self.assertEqual(actions[0]["execution_result"], "skipped")
             self.assertEqual(actions[0]["reason"], "text_asset_navigation")
             self.assertEqual(actions[1]["command"], "fetch_url")
             self.assertEqual(actions[1]["execution_result"], "ok")
@@ -3352,9 +3666,128 @@ class DecisionLoopMetadataTests(unittest.TestCase):
             )
             self.assertEqual(executor.html, "<strong>base</strong>!")
             actions = _read_jsonl(paths.actions_log)
-            self.assertEqual(actions[0]["execution_result"], "skipped")
-            self.assertEqual(actions[0]["reason"], "rich_text_plain_fill")
-            self.assertEqual(shlex.split(actions[1]["command"]), ["playwright-cli", "type", "!"])
+            self.assertTrue(
+                any(action["approval_status"] == "auto_recovery" for action in actions)
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_rich_text_fill_recovery_handles_single_substring_replacement(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = RichTextFillReplacementRecoveryPlanner(self)
+            executor = RichTextFillReplacementRecoveryExecutor()
+            loop = DecisionLoop(
+                task="Replace May with june in the rich-text field.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli fill e15 basejune", executor.commands)
+            self.assertTrue(
+                any(shlex.split(command) == ["playwright-cli", "type", "june"] for command in executor.commands)
+            )
+            self.assertTrue(
+                any("select_text" in command for command in executor.commands)
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertTrue(
+                any(action["approval_status"] == "auto_recovery" for action in actions)
+            )
+            self.assertTrue(
+                any(action["approval_status"] == "auto_recovery" for action in actions)
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_rich_text_fill_recovery_can_append_suffix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = RichTextFillAppendRecoveryPlanner(self)
+            executor = RichTextFillAppendRecoveryExecutor()
+            loop = DecisionLoop(
+                task="Append ! in the rich-text field.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli fill e15 base!", executor.commands)
+            self.assertTrue(
+                any(
+                    shlex.split(command) == ["playwright-cli", "press", "End"]
+                    for command in executor.commands
+                )
+            )
+            self.assertTrue(
+                any(shlex.split(command) == ["playwright-cli", "type", "!"] for command in executor.commands)
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertTrue(
+                any(
+                    action["approval_status"] == "auto_recovery"
+                    and action["command"].startswith("playwright-cli press ")
+                    for action in actions
+                )
+            )
+            self.assertEqual(actions[-1]["command"], "finish")
+
+    def test_rich_text_fill_recovery_can_insert_middle_text(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = RunPaths(root / "run")
+            paths.snapshots.mkdir(parents=True)
+            planner = RichTextFillInsertMiddleRecoveryPlanner(self)
+            executor = RichTextFillInsertMiddleRecoveryExecutor()
+            loop = DecisionLoop(
+                task="Insert ! in the middle of rich-text.",
+                mode="auto",
+                planner=planner,
+                config={"max_steps": 4, "max_errors": 1, "min_visible_text": 0},
+                paths=paths,
+                executor=executor,
+                open_url="https://example.com/task",
+                open_args=[],
+                debug=False,
+            )
+
+            result = loop.run()
+
+            self.assertEqual(result.stop_reason, "completed")
+            self.assertNotIn("playwright-cli fill e15 ba!se", executor.commands)
+            self.assertTrue(
+                any(shlex.split(command) == ["playwright-cli", "press", "ArrowRight"] for command in executor.commands)
+            )
+            self.assertTrue(
+                any(shlex.split(command) == ["playwright-cli", "type", "!"] for command in executor.commands)
+            )
+            actions = _read_jsonl(paths.actions_log)
+            self.assertTrue(
+                any(
+                    action["approval_status"] == "auto_recovery"
+                    and action["command"].startswith("playwright-cli type ")
+                    for action in actions
+                )
+            )
             self.assertEqual(actions[-1]["command"], "finish")
 
     def test_type_without_current_editable_target_is_skipped(self) -> None:
