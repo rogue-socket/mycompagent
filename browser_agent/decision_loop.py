@@ -122,6 +122,12 @@ class DecisionLoop:
         self.recent_text_asset_urls: list[str] = []
         self.unavailable_human_input_questions: set[str] = set()
         self.protected_value_fragments: list[ProtectedValueFragment] = []
+        self.discovery_known_items: set[str] = set()
+        self.discovery_successful_pairs: dict[tuple[str, str], str] = {}
+        self.discovery_failed_pairs: set[tuple[str, str]] = set()
+        self.discovery_pending_pair: tuple[str, str] | None = None
+        self.discovery_items_before_action: set[str] = set()
+        self.discovery_pair_attempt_count: int = 0
 
     def run(self) -> RunResult:
         start = time.monotonic()
@@ -183,6 +189,7 @@ class DecisionLoop:
                     max_visible_chars=int(self.config.get("max_visible_chars", 2000)),
                 )
                 interpreter_dict = interpreter_to_dict(interpreter_state)
+                self._update_discovery_ledger(interpreter_state)
                 self._record_text_asset_urls(interpreter_state.dom_evidence)
                 self.evidence_ledger.add_page(
                     step=self.step,
@@ -327,11 +334,20 @@ class DecisionLoop:
                     snapshot_hash,
                     self.snapshot_repeat_count,
                 ):
-                    warning = (
-                        "The page snapshot did not change after the last action. "
-                        "Choose an action that changes the page or advances to a new link; "
-                        "do not request another snapshot unless the user asked for one."
-                    )
+                    if self.snapshot_repeat_count >= 4:
+                        warning = (
+                            "The page snapshot did not change after multiple successful actions. "
+                            "Do not continue repeating the same pattern. Pivot immediately: try a different "
+                            "interaction type first (search, filter, clear, click a control, keyboard key, "
+                            "or a different drag pairing), then check for a state change before reusing the "
+                            "same pattern. Do not request another snapshot unless the user asked for one."
+                        )
+                    else:
+                        warning = (
+                            "The page snapshot did not change after the last action. "
+                            "Choose an action that changes the page or advances to a new link; "
+                            "do not request another snapshot unless the user asked for one."
+                        )
                     self.last_step_error = (
                         f"{self.last_step_error}\n\n{warning}"
                         if self.last_step_error
@@ -348,7 +364,9 @@ class DecisionLoop:
                     domain_context=self._domain_context,
                     task=self.task,
                     evidence_text=snapshot_state.raw_text,
+                    snapshot_repeat_count=self.snapshot_repeat_count,
                     task_context=task_context,
+                    discovery_context=self._discovery_context_note(interpreter_state),
                 )
                 self.last_step_error = None
                 self.last_observation = None
@@ -874,6 +892,53 @@ class DecisionLoop:
                     self.last_action_ok = False
                     continue
 
+                crafting_drag_warning = _inventory_to_inventory_crafting_drag_warning(
+                    parsed_action,
+                    interpreter_state.clickable_elements,
+                    interpreter_state.visible_text,
+                )
+                if crafting_drag_warning:
+                    self.last_step_error = crafting_drag_warning
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "inventory_to_inventory_crafting_drag",
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
+                drag_pair = _drag_pair_labels(parsed_action, interpreter_state.clickable_elements)
+                if drag_pair and _normalized_pair(drag_pair) in self.discovery_failed_pairs:
+                    self.last_step_error = (
+                        "Discovery guard: this visible pair was already tried in this run and "
+                        "did not create a new item. Choose a different untried pair or use a "
+                        "successful remembered pair to build a needed intermediate."
+                    )
+                    append_jsonl(
+                        self.paths.actions_log,
+                        {
+                            "step": self.step,
+                            "command": parsed_action.action,
+                            "approval_status": "n/a",
+                            "execution_result": "skipped",
+                            "reason": "discovery_pair_already_failed",
+                            "pair": list(drag_pair),
+                            "current_url": interpreter_state.url,
+                            "planner_latency_seconds": tool_result.latency_seconds,
+                        },
+                    )
+                    self.action_history.append(parsed_action.action)
+                    self.last_action_ok = False
+                    continue
+
                 if detect_repeated_action(self.action_history, parsed_action.action):
                     repeated_deletion_warning = _repeated_deletion_warning(parsed_action)
                     if repeated_deletion_warning:
@@ -1219,6 +1284,21 @@ class DecisionLoop:
                     parsed_action,
                     snapshot_state.elements,
                 )
+                if parsed_action.command == "drag":
+                    if _drag_is_inventory_to_inventory(
+                        parsed_action,
+                        interpreter_state.clickable_elements,
+                    ):
+                        self.discovery_pending_pair = None
+                    else:
+                        self.discovery_pending_pair = _drag_pair_labels(
+                            parsed_action,
+                            interpreter_state.clickable_elements,
+                        )
+                    self.discovery_items_before_action = set(self.discovery_known_items)
+                else:
+                    self.discovery_pending_pair = None
+                    self.discovery_items_before_action = set(self.discovery_known_items)
                 exec_result = self.executor.run(parsed_action.action)
                 exec_status = "ok" if exec_result.returncode == 0 else "error"
                 self._log(self._format_command_result(parsed_action.action, exec_result))
@@ -1391,7 +1471,11 @@ class DecisionLoop:
             if self.memory:
                 lesson_count_before = len(self.memory.lessons)
                 try:
-                    extract_lessons_from_run(self.paths.actions_log, self.memory)
+                    extract_lessons_from_run(
+                        self.paths.actions_log,
+                        self.memory,
+                        interpreter_state_log=self.paths.interpreter_state_log,
+                    )
                     new_lessons = len(self.memory.lessons) - lesson_count_before
                     if new_lessons:
                         self._log(f"Memory: post-run learning -> {new_lessons} new lesson(s)")
@@ -1584,6 +1668,165 @@ class DecisionLoop:
             pass
 
         return True
+
+    def _update_discovery_ledger(self, interpreter_state: Any) -> None:
+        current_items = set(_crafting_inventory_items_from_text(interpreter_state.visible_text))
+        if not current_items:
+            return
+
+        if self.discovery_pending_pair and self.discovery_items_before_action:
+            self.discovery_pair_attempt_count += 1
+            pair_key = _normalized_pair(self.discovery_pending_pair)
+            new_items = sorted(current_items - self.discovery_items_before_action)
+            remembered_result = _remembered_result_for_pair(
+                self._domain_context or "",
+                self.discovery_pending_pair,
+            )
+            if new_items:
+                self.discovery_successful_pairs[pair_key] = new_items[0]
+                self.discovery_failed_pairs.discard(pair_key)
+            elif remembered_result:
+                self.discovery_successful_pairs[pair_key] = remembered_result
+                self.discovery_failed_pairs.discard(pair_key)
+            elif self.last_action_ok:
+                self.discovery_failed_pairs.add(pair_key)
+
+        self.discovery_known_items.update(current_items)
+        self.discovery_pending_pair = None
+        self.discovery_items_before_action = set(current_items)
+
+    def _discovery_context_note(self, interpreter_state: Any) -> str:
+        current_items = _crafting_inventory_items_from_text(interpreter_state.visible_text)
+        canvas_items = _crafting_canvas_items_from_elements(
+            interpreter_state.clickable_elements
+        )
+        if not current_items and not self.discovery_known_items:
+            return ""
+
+        lines = [
+            "Use this as authoritative in-run discovery memory. Do not retry failed pairs. "
+            "Prefer combinations that connect known items toward the goal, and record new results by observing the next page state. "
+            "Do not use hardcoded recipes or unstated outside knowledge; only use visible state, this in-run ledger, and recalled learned memory. "
+            "For drag-to-combine pages, choose one state-changing action at a time: build a needed remembered intermediate if the required inputs are visible, otherwise try a systematic untried visible pair. "
+            "If a canvas item exists, do not drag sidebar inventory items onto other sidebar inventory items. "
+            "At the start of a new crafting task, if old canvas items or an active search filter hide needed inventory or contradict the current plan, clear the search/filter or canvas before continuing.",
+        ]
+        if current_items:
+            lines.append("Current inventory items: " + ", ".join(current_items[-30:]) + ".")
+        if canvas_items:
+            lines.append("Current canvas items: " + ", ".join(canvas_items[-12:]) + ".")
+        known_items = _dedupe_preserve_order(
+            current_items + sorted(self.discovery_known_items) + canvas_items
+        )
+        frontier_anchors = _frontier_anchor_items(known_items, self.task)
+        if self.discovery_known_items:
+            recent_known = _dedupe_preserve_order(
+                current_items + list(sorted(self.discovery_known_items))
+            )
+            lines.append("Known inventory items this run: " + ", ".join(recent_known[-45:]) + ".")
+        if frontier_anchors:
+            lines.append(
+                "Target-relevant frontier anchors discovered this run: "
+                + ", ".join(frontier_anchors[:10])
+                + ". If one is not currently on the canvas, use the search box or "
+                "visible inventory list to place it on canvas, then explore untried "
+                "combinations around that anchor before returning to generic base items."
+            )
+            if _has_public_tech_anchor_mix(frontier_anchors):
+                lines.append(
+                    "A public/person/social anchor and a technology/business/search/vehicle "
+                    "anchor are both known. Prefer untried combinations between those anchor "
+                    "families before rebuilding older prerequisite chains or trying base "
+                    "elements."
+                )
+        if self.discovery_successful_pairs:
+            successes = [
+                f"{first} + {second} -> {result}"
+                for (first, second), result in self.discovery_successful_pairs.items()
+            ]
+            lines.append("Successful pairs this run: " + "; ".join(successes[-30:]) + ".")
+        if self.discovery_failed_pairs:
+            failures = [
+                f"{first} + {second}"
+                for first, second in sorted(self.discovery_failed_pairs)
+            ]
+            lines.append("Failed/no-new-item pairs this run: " + "; ".join(failures[-40:]) + ".")
+        remembered_scored = _remembered_visible_combinations_with_scores(
+            self._domain_context or "",
+            known_items,
+            self.discovery_successful_pairs,
+            self.discovery_failed_pairs,
+            task=self.task,
+        )
+        remembered = [
+            (first, second, result)
+            for first, second, result, _score in remembered_scored
+        ]
+        strong_remembered = [
+            (first, second, result)
+            for first, second, result, score in remembered_scored
+            if score >= 12
+        ]
+        if remembered:
+            lines.append(
+                "Remembered successful build steps with visible inputs. Choose one of "
+                "these before untried exploration only when it has strong goal or "
+                "downstream relevance; otherwise treat it as optional learned evidence. "
+                "If neither input is currently on canvas, first create a canvas copy of "
+                "one input, then combine the other input onto it: "
+                + "; ".join(
+                    f"{first} + {second} -> {result}"
+                    for first, second, result in remembered
+                )
+                + "."
+            )
+        if strong_remembered:
+            lines.append(
+                "Strong remembered build steps currently outrank raw exploration: "
+                + "; ".join(
+                    f"{first} + {second} -> {result}"
+                    for first, second, result in strong_remembered[:8]
+                )
+                + "."
+            )
+        diversify_first = self.discovery_pair_attempt_count >= 10
+        candidates = []
+        if not strong_remembered or frontier_anchors or diversify_first:
+            candidate_canvas_items = (
+                list(reversed(frontier_anchors))
+                if frontier_anchors
+                else _dedupe_preserve_order(canvas_items)
+            )
+            candidates = _discovery_candidate_pairs(
+                known_items,
+                candidate_canvas_items,
+                self.discovery_successful_pairs,
+                self.discovery_failed_pairs,
+                task=self.task,
+                diversify_first=diversify_first,
+            )
+        if candidates:
+            if diversify_first:
+                lines.append(
+                    "Branch diversification is currently required because this run has "
+                    "already made many pair attempts. Prefer the first candidates below "
+                    "that use older canvas items or foundational inventory before trying "
+                    "more newest-branch follow-ups."
+                )
+            lines.append(
+                "Untried visible pair candidates to consider next. This list is ordered "
+                "by generic goal relevance first, then branch diversification and local "
+                "follow-ups; do not exhaust one narrow item cluster when other visible "
+                "branches remain: "
+                + "; ".join(f"{first} + {second}" for first, second in candidates)
+                + "."
+            )
+        elif current_items and not canvas_items:
+            lines.append(
+                "No canvas item is currently visible. Create one by clicking or dragging a "
+                "visible inventory item, then combine another visible item onto that canvas card."
+            )
+        return "\n".join(lines)
 
     def _cursor_move_to_offset(
         self,
@@ -2479,6 +2722,77 @@ def _action_refs(parsed_action: Any) -> list[str]:
     if parsed_action.command == "drag":
         return parsed_action.args[:2]
     return []
+
+
+def _inventory_to_inventory_crafting_drag_warning(
+    parsed_action: Any,
+    elements: list[Any],
+    visible_text: str,
+) -> str:
+    if parsed_action.command != "drag" or len(parsed_action.args) < 2:
+        return ""
+    text_lower = (visible_text or "").lower()
+    if re.search(r"\bitems?\s+\d+\b", text_lower) is None:
+        return ""
+    if not any(marker in text_lower for marker in ("clear canvas", "recipes", "search items")):
+        return ""
+
+    by_ref = {getattr(element, "element_id", ""): element for element in elements}
+    source = by_ref.get(parsed_action.args[0])
+    target = by_ref.get(parsed_action.args[1])
+    if not source or not target:
+        return ""
+    if not (_looks_like_inventory_item(source) and _looks_like_inventory_item(target)):
+        return ""
+    canvas_labels = [
+        _crafting_element_label(element)
+        for element in elements
+        if _looks_like_canvas_item(element)
+    ]
+    canvas_labels = [label for label in canvas_labels if label]
+    if not canvas_labels:
+        return ""
+    return (
+        "Inventory-to-inventory drag guard: this page appears to use an inventory plus "
+        "canvas crafting model, and a canvas item is already visible. Do not drag one "
+        "inventory/list item directly onto another inventory/list item; that has been a "
+        "no-op. Click or drag an inventory item to make a canvas copy, then drag onto a "
+        f"visible canvas item instead. Current canvas items include: {', '.join(canvas_labels[:8])}."
+    )
+
+
+def _looks_like_inventory_item(element: Any) -> bool:
+    text = getattr(element, "text", "") or ""
+    return "generic :" in text
+
+
+def _looks_like_canvas_item(element: Any) -> bool:
+    text = getattr(element, "text", "") or ""
+    if "generic card" not in text or " | " not in text:
+        return False
+    lowered = text.lower()
+    return not any(
+        marker in lowered
+        for marker in (
+            "discoveries",
+            "dark mode",
+            "clear canvas",
+            "recipes",
+            "menu",
+            "mute",
+        )
+    )
+
+
+def _crafting_element_label(element: Any) -> str:
+    text = getattr(element, "text", "") or ""
+    match = re.search(r'generic card "([^"]+)"', text)
+    if match:
+        return match.group(1).replace(" | ", " ").strip()
+    match = re.search(r"generic\s*:\s*(.+)$", text)
+    if match:
+        return match.group(1).strip()
+    return ""
 
 
 def _current_tab_selection_noop(parsed_action: Any, snapshot_text: str) -> str:
@@ -3478,6 +3792,460 @@ def _strip_markup_text(text: str) -> str:
 
 def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _drag_pair_labels(parsed_action: Any, elements: list[Any]) -> tuple[str, str] | None:
+    if parsed_action.command != "drag" or len(parsed_action.args) < 2:
+        return None
+    by_ref = {getattr(element, "element_id", ""): element for element in elements}
+    first = _element_crafting_label(by_ref.get(parsed_action.args[0]))
+    second = _element_crafting_label(by_ref.get(parsed_action.args[1]))
+    if not first or not second:
+        return None
+    return first, second
+
+
+def _drag_is_inventory_to_inventory(parsed_action: Any, elements: list[Any]) -> bool:
+    if parsed_action.command != "drag" or len(parsed_action.args) < 2:
+        return False
+    by_ref = {getattr(element, "element_id", ""): element for element in elements}
+    source = by_ref.get(parsed_action.args[0])
+    target = by_ref.get(parsed_action.args[1])
+    return _looks_like_inventory_item(source) and _looks_like_inventory_item(target)
+
+
+def _element_crafting_label(element: Any | None) -> str:
+    if element is None:
+        return ""
+    text = getattr(element, "text", "") or ""
+    card_match = re.search(r'generic card "([^"]+)"', text)
+    if card_match:
+        return _clean_crafting_item_label(card_match.group(1).split(" | ")[-1])
+    generic_match = re.search(r"generic\s*:\s*(.+)$", text)
+    if generic_match:
+        return _clean_crafting_item_label(generic_match.group(1))
+    return _clean_crafting_item_label(text)
+
+
+def _crafting_canvas_items_from_elements(elements: list[Any]) -> list[str]:
+    items: list[str] = []
+    for element in elements:
+        if not _looks_like_canvas_item(element):
+            continue
+        label = _element_crafting_label(element)
+        if label and label not in items:
+            items.append(label)
+    return items
+
+
+def _discovery_candidate_pairs(
+    inventory_items: list[str],
+    canvas_items: list[str],
+    successful_pairs: dict[tuple[str, str], str],
+    failed_pairs: set[tuple[str, str]],
+    *,
+    task: str = "",
+    diversify_first: bool = False,
+    limit: int = 18,
+) -> list[tuple[str, str]]:
+    if not inventory_items or not canvas_items:
+        return []
+
+    seen_pairs = set(successful_pairs) | set(failed_pairs)
+    canvas_ordered = _dedupe_preserve_order(canvas_items)
+    inventory_ordered = _dedupe_preserve_order(inventory_items)
+    recent_canvas = list(reversed(canvas_ordered))[0:3]
+    older_canvas = list(reversed(canvas_ordered))[3:12]
+    recent_inventory = list(reversed(inventory_ordered))[0:18]
+    foundational_inventory = inventory_ordered[0:8]
+    candidates: list[tuple[str, str]] = []
+
+    def add_pairs(
+        anchors: list[str],
+        inputs: list[str],
+        *,
+        max_added: int,
+    ) -> None:
+        added = 0
+        for canvas_item in anchors:
+            for inventory_item in inputs:
+                if len(candidates) >= limit or added >= max_added:
+                    return
+                pair = _normalized_pair((inventory_item, canvas_item))
+                if pair in seen_pairs:
+                    continue
+                if pair[0] == pair[1]:
+                    continue
+                candidates.append((inventory_item, canvas_item))
+                seen_pairs.add(pair)
+                added += 1
+
+    if diversify_first:
+        add_pairs(older_canvas, foundational_inventory + recent_inventory, max_added=10)
+        add_pairs(recent_canvas, foundational_inventory, max_added=6)
+        add_pairs(recent_canvas, recent_inventory, max_added=limit)
+    else:
+        add_pairs(recent_canvas, recent_inventory, max_added=6)
+        add_pairs(older_canvas, foundational_inventory + recent_inventory, max_added=8)
+        add_pairs(recent_canvas, foundational_inventory, max_added=limit)
+
+    if len(candidates) < limit:
+        all_canvas = list(reversed(canvas_ordered))
+        all_inventory = foundational_inventory + recent_inventory
+        for canvas_item in all_canvas:
+            for inventory_item in all_inventory:
+                if len(candidates) >= limit:
+                    return _rank_discovery_candidates(candidates, task)[:limit]
+                pair = _normalized_pair((inventory_item, canvas_item))
+                if pair in seen_pairs:
+                    continue
+                if pair[0] == pair[1]:
+                    continue
+                candidates.append((inventory_item, canvas_item))
+                seen_pairs.add(pair)
+
+    return _rank_discovery_candidates(candidates, task)[:limit]
+
+
+def _remembered_visible_combinations(
+    domain_context: str,
+    available_items: list[str],
+    successful_pairs: dict[tuple[str, str], str],
+    failed_pairs: set[tuple[str, str]],
+    *,
+    task: str,
+    limit: int = 12,
+) -> list[tuple[str, str, str]]:
+    return [
+        (first, second, result)
+        for first, second, result, _score in _remembered_visible_combinations_with_scores(
+            domain_context,
+            available_items,
+            successful_pairs,
+            failed_pairs,
+            task=task,
+            limit=limit,
+        )
+    ]
+
+
+def _remembered_visible_combinations_with_scores(
+    domain_context: str,
+    available_items: list[str],
+    successful_pairs: dict[tuple[str, str], str],
+    failed_pairs: set[tuple[str, str]],
+    *,
+    task: str,
+    limit: int = 12,
+) -> list[tuple[str, str, str, int]]:
+    available = {_clean_crafting_item_label(item).lower() for item in available_items}
+    seen_pairs = set(successful_pairs) | set(failed_pairs)
+    combos = _remembered_combinations_from_context(domain_context)
+    remembered: list[tuple[int, int, tuple[str, str, str, int]]] = []
+    for index, (first, second, result) in enumerate(combos):
+        if first.lower() not in available or second.lower() not in available:
+            continue
+        pair = _normalized_pair((first, second))
+        if pair in seen_pairs:
+            continue
+        score = _goal_relevance_score((result, result), task)
+        score += _remembered_downstream_goal_score(result, combos, task)
+        remembered.append((-score, index, (first, second, result, score)))
+    remembered.sort()
+    return [combo for _, _, combo in remembered[:limit]]
+
+
+def _remembered_combinations_from_context(
+    domain_context: str,
+) -> list[tuple[str, str, str]]:
+    combos: list[tuple[str, str, str]] = []
+    for line in (domain_context or "").splitlines():
+        match = re.search(
+            r"Observed combination on this drag-to-combine page:\s*(.+?)\s+\+\s+(.+?)\s+created\s+(.+?)\.",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        first = _clean_crafting_item_label(match.group(1))
+        second = _clean_crafting_item_label(match.group(2))
+        result = _clean_crafting_item_label(match.group(3))
+        if first and second and result:
+            combos.append((first, second, result))
+    return combos
+
+
+def _remembered_result_for_pair(domain_context: str, pair: tuple[str, str]) -> str:
+    pair_key = _normalized_pair(pair)
+    for first, second, result in _remembered_combinations_from_context(domain_context):
+        if _normalized_pair((first, second)) == pair_key:
+            return result
+    return ""
+
+
+def _remembered_downstream_goal_score(
+    item: str,
+    combos: list[tuple[str, str, str]],
+    task: str,
+    *,
+    max_depth: int = 8,
+) -> int:
+    start = _clean_crafting_item_label(item).lower()
+    if not start:
+        return 0
+    best = 0
+    frontier = [(start, 0)]
+    seen = {start}
+    while frontier:
+        current, depth = frontier.pop(0)
+        if depth >= max_depth:
+            continue
+        for first, second, result in combos:
+            if current not in {first.lower(), second.lower()}:
+                continue
+            result_key = result.lower()
+            if result_key in seen:
+                continue
+            seen.add(result_key)
+            depth_weight = max_depth - depth
+            best = max(
+                best,
+                depth_weight * _goal_relevance_score((result, result), task),
+            )
+            frontier.append((result_key, depth + 1))
+    return best
+
+
+def _rank_discovery_candidates(
+    candidates: list[tuple[str, str]],
+    task: str,
+) -> list[tuple[str, str]]:
+    indexed = list(enumerate(candidates))
+    indexed.sort(
+        key=lambda item: (
+            -_goal_relevance_score(item[1], task),
+            item[0],
+        )
+    )
+    return [candidate for _, candidate in indexed]
+
+
+def _frontier_anchor_items(items: list[str], task: str, *, limit: int = 20) -> list[str]:
+    if not _goal_tokens(task):
+        return []
+    scored: list[tuple[int, int, str]] = []
+    for index, item in enumerate(_dedupe_preserve_order(items)):
+        score = _goal_relevance_score((item, item), task)
+        threshold = 6 if _task_looks_like_named_person(task) else 8
+        if score < threshold:
+            continue
+        scored.append((-score, index, item))
+    scored.sort()
+    return [item for _, _, item in scored[:limit]]
+
+
+def _has_public_tech_anchor_mix(items: list[str]) -> bool:
+    has_public = False
+    has_tech = False
+    for item in items:
+        tokens = set(_label_tokens(item))
+        if _label_looks_like_person_or_role(item) or tokens & {
+            "celebrity",
+            "fame",
+            "famous",
+            "influencer",
+            "paparazzi",
+        }:
+            has_public = True
+        if tokens & {
+            "car",
+            "computer",
+            "electric",
+            "engine",
+            "glass",
+            "google",
+            "locomotive",
+            "rocket",
+            "search",
+            "space",
+            "technology",
+            "train",
+        } or {"self", "driving"} <= tokens:
+            has_tech = True
+    return has_public and has_tech
+
+
+def _goal_relevance_score(candidate: tuple[str, str], task: str) -> int:
+    goal_tokens = _goal_tokens(task)
+    if not goal_tokens:
+        return 0
+    first, second = candidate
+    candidate_tokens = set(_label_tokens(first) + _label_tokens(second))
+    score = 0
+    score += 8 * len(candidate_tokens & goal_tokens)
+    if _task_looks_like_named_person(task):
+        for label in candidate:
+            if _label_looks_like_person_or_role(label):
+                score += 6
+            score += _label_named_person_goal_richness(label)
+        if any(_label_looks_like_person_or_role(label) for label in candidate) and any(
+            _label_named_person_goal_richness(label) > 0 for label in candidate
+        ):
+            score += 4
+        if all(_label_is_foundational_element(label) for label in candidate):
+            score -= 4
+    return score
+
+
+def _goal_tokens(task: str) -> set[str]:
+    stopwords = {
+        "a",
+        "an",
+        "and",
+        "create",
+        "craft",
+        "find",
+        "get",
+        "goal",
+        "in",
+        "make",
+        "of",
+        "open",
+        "play",
+        "the",
+        "to",
+        "until",
+        "use",
+    }
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", (task or "").lower())
+        if len(token) > 2 and token not in stopwords
+    }
+
+
+def _label_tokens(label: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (label or "").lower())
+
+
+def _task_looks_like_named_person(task: str) -> bool:
+    words = re.findall(r"\b[A-Z][a-z]+\b", task or "")
+    return len(words) >= 2
+
+
+def _label_looks_like_person_or_role(label: str) -> bool:
+    if _label_is_foundational_element(label):
+        return False
+    tokens = _label_tokens(label)
+    if any(token in {"human", "person", "people", "man", "woman", "boy", "girl"} for token in tokens):
+        return True
+    if any(token in {"celebrity", "ceo", "entrepreneur", "founder", "inventor", "influencer", "paparazzi"} for token in tokens):
+        return True
+    return any(
+        len(token) > 5 and token.endswith(suffix)
+        for token in tokens
+        for suffix in ("er", "or", "ist", "ian", "man", "woman")
+    )
+
+
+def _label_named_person_goal_richness(label: str) -> int:
+    tokens = set(_label_tokens(label))
+    if not tokens:
+        return 0
+    score = 0
+    if tokens & {
+        "camera",
+        "image",
+        "photo",
+        "photograph",
+        "photosaurus",
+        "photographer",
+        "picture",
+        "snap",
+        "social",
+        "media",
+        "news",
+        "internet",
+        "search",
+        "google",
+        "selfie",
+        "snapchat",
+        "paparazzi",
+        "influencer",
+        "celebrity",
+        "fame",
+        "famous",
+    }:
+        score += 5
+    if tokens & {
+        "engine",
+        "robot",
+        "machine",
+        "computer",
+        "technology",
+        "electric",
+        "car",
+        "self",
+        "driving",
+        "train",
+        "locomotive",
+        "rocket",
+        "space",
+        "google",
+        "glass",
+        "steampunk",
+    }:
+        score += 3
+    if {"steam", "punk"} <= tokens:
+        score += 3
+    if tokens & {"company", "business", "money", "bank", "market", "ceo", "founder", "entrepreneur", "billionaire", "fame", "famous"}:
+        score += 4
+    if len(tokens) > 1 and not _label_is_foundational_element(label):
+        score += 1
+    return score
+
+
+def _label_is_foundational_element(label: str) -> bool:
+    return " ".join(_label_tokens(label)) in {"water", "fire", "earth", "wind"}
+
+
+def _crafting_inventory_items_from_text(visible_text: str) -> list[str]:
+    lines = [line.strip() for line in (visible_text or "").splitlines() if line.strip()]
+    items: list[str] = []
+    in_items = False
+    for line in lines:
+        if re.fullmatch(r"Items?\s+\d+", line, flags=re.IGNORECASE):
+            in_items = True
+            continue
+        if in_items and line.lower() in {"discoveries", "advertisement", "menu"}:
+            break
+        if in_items:
+            label = _clean_crafting_item_label(line)
+            if label:
+                items.append(label)
+    return items
+
+
+def _normalized_pair(pair: tuple[str, str]) -> tuple[str, str]:
+    first, second = (_clean_crafting_item_label(pair[0]), _clean_crafting_item_label(pair[1]))
+    return tuple(sorted((first, second)))  # type: ignore[return-value]
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        cleaned = _clean_crafting_item_label(value)
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        deduped.append(cleaned)
+    return deduped
+
+
+def _clean_crafting_item_label(value: str) -> str:
+    value = re.sub(r"^[^\w#]+", "", (value or "").strip(), flags=re.UNICODE)
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _planner_error_is_quota(message: str) -> bool:

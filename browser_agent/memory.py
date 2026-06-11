@@ -163,14 +163,23 @@ class MemoryStore:
         })
         return result
 
-    def recall_on_domain(self, domain: str) -> list[Lesson]:
+    def recall_on_domain(self, domain: str, max_items: int = 60) -> list[Lesson]:
         """Find site-specific lessons for a domain."""
-        result = [
+        matches = [
             ls
             for ls in self.lessons
             if ls.domain
             and (ls.domain == domain or domain.endswith("." + ls.domain))
-        ][:3]
+        ]
+        matches.sort(
+            key=lambda ls: (
+                _domain_lesson_priority(ls),
+                -_domain_lesson_recency(ls),
+                -ls.use_count,
+                ls.lesson,
+            )
+        )
+        result = matches[:max_items]
         self._emit({
             "event": "domain_recall",
             "domain": domain,
@@ -191,7 +200,22 @@ class MemoryStore:
 
     def record_lesson(self, lesson: Lesson) -> None:
         """Add a new lesson if no duplicate exists."""
+        new_combo = _combination_lesson_parts(lesson)
         for existing in self.lessons:
+            existing_combo = _combination_lesson_parts(existing)
+            if (
+                new_combo
+                and existing_combo
+                and existing.domain == lesson.domain
+                and existing_combo[:2] == new_combo[:2]
+                and existing_combo[2] != new_combo[2]
+            ):
+                self._emit({
+                    "event": "lesson_conflict_ignored",
+                    "existing": existing.lesson,
+                    "ignored": lesson.lesson,
+                })
+                return
             if _is_duplicate_lesson(existing, lesson):
                 self._emit({
                     "event": "lesson_deduplicated",
@@ -294,6 +318,27 @@ class MemoryStore:
         self.save()
 
 
+def _domain_lesson_priority(lesson: Lesson) -> int:
+    text = lesson.lesson.lower()
+    if "uses an inventory plus canvas model" in text:
+        return 0
+    if "drag can succeed mechanically" in text:
+        return 1
+    if text.startswith("observed combination"):
+        return 2
+    return 3
+
+
+def _domain_lesson_recency(lesson: Lesson) -> int:
+    digits = re.sub(r"\D", "", lesson.created_at or "")
+    if not digits:
+        return 0
+    try:
+        return int(digits[:8])
+    except ValueError:
+        return 0
+
+
 def _is_generic_single_command_recovery(lesson: Lesson) -> bool:
     """Return whether a learned recovery is too vague for Tier 1 promotion."""
     return bool(_GENERIC_SINGLE_COMMAND_RECOVERY_RE.search(lesson.lesson))
@@ -321,6 +366,25 @@ def _is_duplicate_lesson(existing: Lesson, lesson: Lesson) -> bool:
     )
 
 
+def _combination_lesson_parts(lesson: Lesson) -> tuple[str, str, str] | None:
+    if lesson.category != "site_specific":
+        return None
+    match = re.search(
+        r"Observed combination on this drag-to-combine page:\s*(.+?)\s+\+\s+(.+?)\s+created\s+(.+?)\.",
+        lesson.lesson,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    first = _normalize_crafting_label(match.group(1)).lower()
+    second = _normalize_crafting_label(match.group(2)).lower()
+    result = _normalize_crafting_label(match.group(3)).lower()
+    if not first or not second or not result:
+        return None
+    pair = tuple(sorted((first, second)))
+    return pair[0], pair[1], result
+
+
 # ---------------------------------------------------------------------------
 # Post-run learning
 # ---------------------------------------------------------------------------
@@ -343,7 +407,12 @@ _KNOWN_ERROR_PHRASES = [
 _MAX_SHORT_RECOVERY_ACTIONS = 3
 
 
-def extract_lessons_from_run(actions_log: Path, memory: MemoryStore) -> None:
+def extract_lessons_from_run(
+    actions_log: Path,
+    memory: MemoryStore,
+    *,
+    interpreter_state_log: Path | None = None,
+) -> None:
     """Scan a run's action log for failure→recovery patterns and learn."""
     if not actions_log.exists():
         return
@@ -387,7 +456,209 @@ def extract_lessons_from_run(actions_log: Path, memory: MemoryStore) -> None:
         )
         memory.record_lesson(lesson)
 
+    if interpreter_state_log is not None and interpreter_state_log.exists():
+        _extract_drag_crafting_lessons(actions, _load_jsonl(interpreter_state_log), memory)
+
     memory.save()
+
+
+def _extract_drag_crafting_lessons(
+    actions: list[dict[str, Any]],
+    states: list[dict[str, Any]],
+    memory: MemoryStore,
+) -> None:
+    if not actions or len(states) < 2:
+        return
+    domain = _extract_domain_from_states(states)
+    if not domain:
+        return
+
+    states_by_step = {
+        int(state.get("step", -1)): state
+        for state in states
+        if isinstance(state.get("step"), int)
+    }
+    if not any(_looks_like_drag_crafting_state(state) for state in states):
+        return
+
+    if _learned_canvas_copy_transition(actions, states_by_step):
+        memory.record_lesson(
+            Lesson(
+                lesson=(
+                    "This drag-to-combine page uses an inventory plus canvas model: "
+                    "if inventory-to-inventory drags do not add items, click or drag an "
+                    "inventory item to create a canvas copy, then combine items on the canvas."
+                ),
+                category="site_specific",
+                domain=domain,
+                use_count=1,
+                source="learned",
+                triggered_domains=[domain],
+            )
+        )
+
+    if _learned_noop_drag_exploration(actions, states_by_step):
+        memory.record_lesson(
+            Lesson(
+                lesson=(
+                    "On this drag-to-combine page, a drag can succeed mechanically "
+                    "while creating no new inventory item. Treat that pair as failed "
+                    "for the current run, avoid retrying it, and explore a different "
+                    "visible pair."
+                ),
+                category="site_specific",
+                domain=domain,
+                use_count=1,
+                source="learned",
+                triggered_domains=[domain],
+            )
+        )
+
+    for action in actions:
+        if _extract_command_name(str(action.get("command", ""))) != "drag":
+            continue
+        step = int(action.get("step", -1))
+        before = states_by_step.get(step)
+        after = states_by_step.get(step + 1)
+        if not before or not after:
+            continue
+        before_items = _crafting_inventory_items(before)
+        after_items = _crafting_inventory_items(after)
+        if not before_items or not after_items:
+            continue
+        new_items = [item for item in after_items if item not in before_items]
+        if not new_items:
+            continue
+        pair = _dragged_pair_from_action(action)
+        if not pair:
+            continue
+        for item in new_items[:3]:
+            memory.record_lesson(
+                Lesson(
+                    lesson=(
+                        f"Observed combination on this drag-to-combine page: "
+                        f"{pair[0]} + {pair[1]} created {item}."
+                    ),
+                    category="site_specific",
+                    domain=domain,
+                    use_count=1,
+                    source="learned",
+                    triggered_domains=[domain],
+                )
+            )
+
+
+def _extract_domain_from_states(states: list[dict[str, Any]]) -> str | None:
+    for state in states:
+        domain = _domain_from_url(str(state.get("url") or ""))
+        if domain:
+            return domain
+    return None
+
+
+def _looks_like_drag_crafting_state(state: dict[str, Any]) -> bool:
+    visible_text = str(state.get("visible_text") or "").lower()
+    clickable_text = " ".join(
+        str(element.get("text") or "")
+        for element in state.get("clickable_elements") or []
+        if isinstance(element, dict)
+    ).lower()
+    haystack = f"{visible_text}\n{clickable_text}"
+    return (
+        re.search(r"\bitems?\s+\d+\b", visible_text) is not None
+        and any(marker in haystack for marker in ("search items", "clear canvas", "recipes"))
+    )
+
+
+def _crafting_inventory_items(state: dict[str, Any]) -> list[str]:
+    visible_text = str(state.get("visible_text") or "")
+    lines = [line.strip() for line in visible_text.splitlines() if line.strip()]
+    items: list[str] = []
+    in_items = False
+    for line in lines:
+        if re.fullmatch(r"Items?\s+\d+", line, flags=re.IGNORECASE):
+            in_items = True
+            continue
+        if in_items and line.lower() in {"discoveries", "advertisement", "menu"}:
+            break
+        if in_items:
+            label = _normalize_crafting_label(line)
+            if label:
+                items.append(label)
+    return items
+
+
+def _learned_canvas_copy_transition(
+    actions: list[dict[str, Any]],
+    states_by_step: dict[int, dict[str, Any]],
+) -> bool:
+    saw_noop_drag = False
+    for action in actions:
+        step = int(action.get("step", -1))
+        command = _extract_command_name(str(action.get("command", "")))
+        before = states_by_step.get(step)
+        after = states_by_step.get(step + 1)
+        if not before or not after:
+            continue
+        before_items = _crafting_inventory_items(before)
+        after_items = _crafting_inventory_items(after)
+        if command == "drag" and before_items == after_items:
+            saw_noop_drag = True
+        if command == "click" and saw_noop_drag and _canvas_item_count(after) > _canvas_item_count(before):
+            return True
+    return False
+
+
+def _learned_noop_drag_exploration(
+    actions: list[dict[str, Any]],
+    states_by_step: dict[int, dict[str, Any]],
+) -> bool:
+    for action in actions:
+        if _extract_command_name(str(action.get("command", ""))) != "drag":
+            continue
+        if not _dragged_pair_from_action(action):
+            continue
+        step = int(action.get("step", -1))
+        before = states_by_step.get(step)
+        after = states_by_step.get(step + 1)
+        if not before or not after:
+            continue
+        before_items = _crafting_inventory_items(before)
+        after_items = _crafting_inventory_items(after)
+        if before_items and before_items == after_items:
+            return True
+    return False
+
+
+def _canvas_item_count(state: dict[str, Any]) -> int:
+    count = 0
+    for element in state.get("clickable_elements") or []:
+        text = str(element.get("text") or "")
+        lowered = text.lower()
+        if "generic card" in text and " | " in text and not any(
+            marker in lowered
+            for marker in ("discoveries", "dark mode", "clear canvas", "recipes", "menu", "mute")
+        ):
+            count += 1
+    return count
+
+
+def _dragged_pair_from_action(action: dict[str, Any]) -> tuple[str, str] | None:
+    stdout = str(action.get("stdout") or "")
+    match = re.search(r'"Dragged\s+(.+?)\s+to\s+(.+?)"', stdout)
+    if not match:
+        return None
+    first = _normalize_crafting_label(match.group(1))
+    second = _normalize_crafting_label(match.group(2))
+    if not first or not second:
+        return None
+    return first, second
+
+
+def _normalize_crafting_label(value: str) -> str:
+    value = re.sub(r"^[^\w#]+", "", value.strip(), flags=re.UNICODE)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
 
 
 def _collect_recovery_actions(

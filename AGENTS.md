@@ -23,6 +23,10 @@
 - Keep tests deterministic. Prefer mocks or small fixtures over live browser/network work unless the changed behavior requires integration coverage.
 - Do not reformat, rename, or clean up unrelated code.
 
+## Agent Behavior
+- Absolutely no hardcoded task recipes, game solutions, site-specific answer paths, or baked-in completion sequences. Agents must discover from visible state, use persisted memory as learned evidence, and verify progress through observed page changes.
+- Memory is allowed only as learned evidence. If a remembered step does not work in the current run, the agent must mark it as failed/stale for that run and explore alternatives instead of forcing the old path.
+
 ## Verification
 - Run the narrowest relevant test first, then `python -m pytest tests -q` when shared behavior changes.
 - For CLI-facing changes, include the exact `browser-agent ...` command used and note the mode (`--safe`, `--hybrid`, or `--auto`).

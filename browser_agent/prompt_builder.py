@@ -51,6 +51,8 @@ def build_system_instruction(
         "- If the current editable has rich HTML, avoid plain fill actions that replace the whole value; use targeted typing, selection-based formatting, or another formatting-preserving edit.",
         "- After entering text in a search box, press Enter to submit. Do NOT click the search button —",
         "  autocomplete dropdowns often cover it and cause timeout errors.",
+        "- If the page snapshot stays unchanged across repeated successful actions, do not keep the same interaction pattern. Rotate control families (click/press/drag/type/search), then only retry a pattern after a real state change.",
+        "- In drag-to-combine games with an inventory/list and a canvas/work area, keep combinations on the canvas after you learn that list-to-list drags do not change state. Click or drag an inventory item to create a canvas copy, then combine with canvas items.",
         "- Check DOM evidence for image src, iframe src, links, active editable HTML, and button state before asking the human.",
         "- For short visual values, inspect image src/alt/title and any src_token in DOM evidence before asking the human.",
         "- If a nearby image has src_token='abc123' and the requirement asks for a short code/text visible in that image, treat that token as page evidence to try before asking the human or fetching binary image variants.",
@@ -172,6 +174,8 @@ def build_page_message(
     task: str | None = None,
     evidence_text: str | None = None,
     task_context: str | None = None,
+    snapshot_repeat_count: int = 0,
+    discovery_context: str | None = None,
 ) -> str:
     """Build a per-step user message with current page state."""
     selected_elements = _select_clickable_elements(
@@ -273,9 +277,29 @@ def build_page_message(
     if bad_url_guess_note:
         sections.insert(2, "URL recovery note:\n" + bad_url_guess_note)
 
+    if discovery_context:
+        sections.insert(2, "Discovery memory:\n" + discovery_context)
+        sections.insert(2, "Discovery task contract:\n" + _discovery_task_contract(task or ""))
+
     variant_note = _variant_guess_recovery_note(action_history, state.visible_text, state.dom_evidence)
     if variant_note:
         sections.insert(2, "Variant-loop recovery note:\n" + variant_note)
+
+    stagnation_note = _stagnation_recovery_note(
+        action_history,
+        state.visible_text,
+        snapshot_repeat_count,
+    )
+    if stagnation_note:
+        sections.insert(2, "Stagnation recovery note:\n" + stagnation_note)
+
+    crafting_note = _drag_crafting_recovery_note(
+        action_history,
+        selected_elements,
+        state.visible_text,
+    )
+    if crafting_note:
+        sections.insert(2, "Drag-combine recovery note:\n" + crafting_note)
 
     if last_error:
         blank_page_note = _blank_page_ref_recovery_note(
@@ -357,6 +381,20 @@ def planner_state_debug_payload(
         ),
         "dom_evidence": state.dom_evidence,
     }
+
+
+def _discovery_task_contract(task: str) -> str:
+    goal = task.strip() or "the requested target"
+    return "\n".join(
+        [
+            "This is a discovery-and-learning task, not a recipe-following task.",
+            "Absolutely do not use hardcoded game solutions, external recipe knowledge, or baked-in completion sequences.",
+            "Allowed evidence: current visible page state, previous actions in this run, in-run discovery memory, and persisted site lessons explicitly shown in this prompt.",
+            "Every combination/action must be chosen because it is visible, remembered from learned memory, or is a systematic untried exploration from visible items.",
+            "If a remembered or guessed pair creates no new visible item, treat it as failed/stale for this run and choose a different pair.",
+            f"Do not finish until the current visible page state itself shows {goal}.",
+        ]
+    )
 
 
 def _format_element_line(
@@ -789,6 +827,182 @@ def _variant_guess_recovery_note(
 def _fill_target(action: str) -> str:
     match = re.search(r"\bfill\s+(e\d+)\b", action)
     return match.group(1) if match else ""
+
+
+def _tool_parts(action: str) -> list[str]:
+    try:
+        parts = shlex.split(action)
+    except ValueError:
+        return []
+    if not parts:
+        return []
+    if parts[0] == "playwright-cli":
+        return parts[1:]
+    return parts
+
+
+def _drag_signature(action: str) -> str:
+    parts = _tool_parts(action)
+    if len(parts) < 3 or parts[0] != "drag":
+        return ""
+    return f"{parts[1]}->{parts[2]}"
+
+
+def _action_signature(action: str) -> str:
+    parts = _tool_parts(action)
+    if len(parts) < 2:
+        return ""
+    if parts[0] == "drag" and len(parts) >= 3:
+        return f"{parts[0]}:{parts[1]}->{parts[2]}"
+    return f"{parts[0]}:{parts[1]}"
+
+
+def _repeated_drag_pattern(action_history: list[str], repeats: int = 3) -> str:
+    drag_patterns = [_drag_signature(action) for action in action_history[-12:] if _drag_signature(action)]
+    if len(drag_patterns) < repeats:
+        return ""
+    candidate = drag_patterns[-1]
+    if all(pattern == candidate for pattern in drag_patterns[-repeats:]):
+        return candidate
+    return ""
+
+
+def _repeated_action_pattern(action_history: list[str], repeats: int = 3) -> str:
+    signatures = [
+        _action_signature(action)
+        for action in action_history[-12:]
+        if _action_signature(action)
+    ]
+    if len(signatures) < repeats:
+        return ""
+    candidate = signatures[-1]
+    if all(sig == candidate for sig in signatures[-repeats:]):
+        return candidate
+    return ""
+
+
+def _stagnation_recovery_note(
+    action_history: list[str],
+    visible_text: str,
+    snapshot_repeat_count: int,
+) -> str:
+    if snapshot_repeat_count < 2:
+        return ""
+    visible_hints = []
+    for marker in ("search", "filter", "clear", "reset", "undo", "redo", "refresh", "retry"):
+        if marker in (visible_text or "").lower():
+            visible_hints.append(marker)
+
+    repeated_drag = _repeated_drag_pattern(action_history, repeats=3)
+    if repeated_drag:
+        return (
+            f"The page state stayed unchanged across {snapshot_repeat_count} successful snapshots, and you just repeated "
+            f"the same drag pair ({repeated_drag}) multiple times. This is likely a dead-end. "
+            f"Pivot immediately: try a different interaction family (click/tap controls, press Enter/Tab/Escape, or type into any available input), "
+            f"then only retry drag with a different source/target after another page change."
+        )
+
+    repeated_action = _repeated_action_pattern(action_history, repeats=3)
+    if repeated_action:
+        visible_hint_clause = ""
+        if visible_hints:
+            visible_hint_clause = f"Visible clues include {', '.join(visible_hints)}; "
+        return (
+            f"The page state stayed unchanged across {snapshot_repeat_count} successful snapshots, and the last few actions were "
+            f"the same command pattern ({repeated_action}). Do not keep repeating the same action. "
+            f"Inspect visible UI for a state-changing control (search/filter/clear/reset), perform one alternative interaction type first, "
+            f"and only retry this branch if the page evidence actually changes. "
+            f"{visible_hint_clause}use one before continuing."
+        )
+
+    return (
+        f"The page state stayed unchanged across {snapshot_repeat_count} successful snapshots. "
+        f"Treat this as a stagnation signal: rotate your tactic immediately (different control families, then different action type, then navigation-based fallback "
+        f"only if needed). If visible controls are present, prefer clicking/pressing them instead of retrying the same flow."
+    )
+
+
+def _drag_crafting_recovery_note(
+    action_history: list[str],
+    selected_elements: list,
+    visible_text: str,
+) -> str:
+    text_lower = (visible_text or "").lower()
+    looks_like_crafting_ui = (
+        re.search(r"\bitems?\s+\d+\b", text_lower) is not None
+        and any(
+            marker in text_lower
+            for marker in ("clear canvas", "recipes", "search items")
+        )
+    )
+    if not looks_like_crafting_ui:
+        return ""
+
+    labels_by_ref = {
+        getattr(element, "element_id", ""): _crafting_label(getattr(element, "text", ""))
+        for element in selected_elements
+    }
+    labels_by_ref = {ref: label for ref, label in labels_by_ref.items() if ref and label}
+    recent_pairs = _recent_drag_label_pairs(action_history, labels_by_ref)
+
+    inventory_refs = []
+    canvas_refs = []
+    for element in selected_elements:
+        ref = getattr(element, "element_id", "")
+        raw_text = getattr(element, "text", "")
+        label = labels_by_ref.get(ref, "")
+        if not ref or not label:
+            continue
+        if "generic card" in raw_text and " | " in raw_text:
+            canvas_refs.append(f"{ref}={label}")
+        elif "generic :" in raw_text:
+            inventory_refs.append(f"{ref}={label}")
+
+    parts = [
+        "This page looks like a drag-to-combine UI with an item inventory and a canvas/work area. "
+        "If list-to-list or inventory-to-inventory drags did not add an item, stop using that pattern. "
+        "Create or use canvas copies, then drag inventory or canvas items onto a visible canvas item ref."
+    ]
+    if canvas_refs:
+        parts.append("Likely canvas refs now visible: " + ", ".join(canvas_refs[:8]) + ".")
+    if inventory_refs:
+        parts.append("Likely inventory refs: " + ", ".join(inventory_refs[:12]) + ".")
+    if recent_pairs:
+        parts.append(
+            "Recent drag pairs already attempted: "
+            + "; ".join(recent_pairs[:10])
+            + ". Do not repeat an exact pair unless the current page shows the named new item it produced."
+        )
+    return " ".join(parts)
+
+
+def _crafting_label(text: str) -> str:
+    text = text.strip()
+    card_match = re.search(r'generic card "([^"]+)"', text)
+    if card_match:
+        value = card_match.group(1).replace(" | ", " ").strip()
+        return value if value and value.lower() not in {"discoveries time"} else ""
+    generic_match = re.search(r"generic\s*:\s*(.+)$", text)
+    if generic_match:
+        return generic_match.group(1).strip()
+    return ""
+
+
+def _recent_drag_label_pairs(action_history: list[str], labels_by_ref: dict[str, str]) -> list[str]:
+    pairs = []
+    seen = set()
+    for action in reversed(action_history[-20:]):
+        parts = _tool_parts(action)
+        if len(parts) < 3 or parts[0] != "drag":
+            continue
+        first = labels_by_ref.get(parts[1], parts[1])
+        second = labels_by_ref.get(parts[2], parts[2])
+        key = tuple(sorted((first, second)))
+        if key in seen:
+            continue
+        seen.add(key)
+        pairs.append(f"{first} + {second}")
+    return pairs
 
 
 def _task_tab_recovery_note(
